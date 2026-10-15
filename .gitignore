@@ -1,0 +1,19 @@
+# Ignorar datos crudos (Capa Bronce)
+bronze/
+*.csv
+*.xlsx
+
+# Ignorar base de datos local (Capa Silver)
+silver/
+*.db
+*.sqlite3
+
+# Ignorar entornos virtuales y cachés de Python
+.env/
+venv/
+__pycache__/
+*.pyc
+
+# Ignorar archivos de sistema operativo
+.DS_Store
+Thumbs.db

@@ -1,19 +1,88 @@
-# Ignorar datos crudos (Capa Bronce)
+# ============================
+# Capas del Data Lake (datos)
+# ============================
 bronze/
-*.csv
-*.xlsx
-
-# Ignorar base de datos local (Capa Silver)
 silver/
+gold/
+data/
+
+# ============================
+# Archivos de datos
+# ============================
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.json
+*.jsonl
+*.parquet
 *.db
+*.sqlite
 *.sqlite3
 
-# Ignorar entornos virtuales y cachés de Python
-.env/
-venv/
-__pycache__/
-*.pyc
+# ============================
+# Secretos y credenciales
+# ============================
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
 
-# Ignorar archivos de sistema operativo
+# ============================
+# Entornos virtuales
+# ============================
+.venv/
+venv/
+env/
+ENV/
+.conda/
+pip-wheel-metadata/
+
+# ============================
+# Cachés de Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ============================
+# Build / empaquetado
+# ============================
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ============================
+# Logs
+# ============================
+logs/
+*.log
+
+# ============================
+# IDEs y editores
+# ============================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ============================
+# Sistema operativo
+# ============================
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# ============================
+# Temporales / backups
+# ============================
+*.tmp
+*.bak

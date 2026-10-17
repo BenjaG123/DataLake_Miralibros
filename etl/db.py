@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -14,6 +15,9 @@ from etl.config import get_database_url
 Connection = psycopg.Connection[Any]
 Row = Sequence[Any]
 
+SCHEMA_PLACEHOLDER = "{{schema}}"
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def connect(database_url: str | None = None) -> Connection:
     """Conecta a PostgreSQL."""
@@ -22,22 +26,18 @@ def connect(database_url: str | None = None) -> Connection:
 
 @contextmanager
 def connection(database_url: str | None = None) -> Iterator[Connection]:
-    """Entrega una conexión y la cierra al salir del contexto."""
-    conn = connect(database_url)
-    try:
+    """Entrega una conexión y asegura su cierre al salir."""
+    with connect(database_url) as conn:
         yield conn
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
 
 
-def execute_sql_file(conn: Connection, sql_path: str | Path) -> None:
-    """Ejecuta un archivo SQL completo dentro de una transacción."""
+def execute_sql_file(
+    conn: Connection,
+    sql_path: str | Path,
+    *,
+    schema: str | None = None,
+) -> None:
+    """Ejecuta un archivo SQL dentro de una transacción reemplazando {{schema}}."""
     path = Path(sql_path)
     if not path.is_file():
         raise FileNotFoundError(f"No se encontró el archivo SQL: {path}")
@@ -46,16 +46,25 @@ def execute_sql_file(conn: Connection, sql_path: str | Path) -> None:
     if not statement:
         raise ValueError(f"El archivo SQL está vacío: {path}")
 
+    if SCHEMA_PLACEHOLDER in statement:
+        if schema is None:
+            raise ValueError(
+                f"El archivo SQL {path} requiere un schema para {SCHEMA_PLACEHOLDER}."
+            )
+        if not _IDENTIFIER_RE.fullmatch(schema):
+            raise ValueError(f"Schema inválido: {schema!r}")
+        statement = statement.replace(SCHEMA_PLACEHOLDER, schema)
+
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(statement)
 
 
 def truncate_table(conn: Connection, schema: str, table: str) -> None:
-    """Vacía una tabla sin eliminarla."""
+    """Vacía una tabla reseteando secuencias y cascada."""
     with conn.cursor() as cur:
         cur.execute(
-            sql.SQL("TRUNCATE TABLE {}.{}").format(
+            sql.SQL("TRUNCATE TABLE {}.{} RESTART IDENTITY CASCADE").format(
                 sql.Identifier(schema),
                 sql.Identifier(table),
             )
@@ -69,14 +78,14 @@ def copy_rows(
     columns: Sequence[str],
     rows: Iterable[Row],
 ) -> int:
-    """Carga filas con COPY y devuelve cuántas se enviaron."""
+    """Carga masiva de filas ultra rápida usando COPY."""
     if not columns:
         raise ValueError("Debe indicar al menos una columna para COPY.")
 
     statement = sql.SQL("COPY {}.{} ({}) FROM STDIN").format(
         sql.Identifier(schema),
         sql.Identifier(table),
-        sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        sql.SQL(", ").join(sql.Identifier(col) for col in columns),
     )
 
     count = 0
@@ -95,8 +104,7 @@ def replace_table(
     columns: Sequence[str],
     rows: Iterable[Row],
 ) -> int:
-    """Reemplaza el contenido de una tabla con TRUNCATE + COPY transaccional."""
+    """Reemplaza atómicamente el contenido de una tabla."""
     with conn.transaction():
         truncate_table(conn, schema, table)
         return copy_rows(conn, schema, table, columns, rows)
-    return None

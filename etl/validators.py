@@ -1,0 +1,314 @@
+"""Validadores y normalizadores tolerantes a fallos para la capa Silver."""
+
+from __future__ import annotations
+
+import unicodedata
+from datetime import date, datetime
+from typing import Any
+
+from email_validator import EmailNotValidError, validate_email
+
+PLACEHOLDERS = frozenset(
+    {
+        "",
+        "0",
+        "null",
+        "undefined",
+        "none",
+        "n/a",
+        "n.a.",
+        "na",
+        "-",
+        "--",
+        "---",
+        "sin nombre",
+        "sin dato",
+        "sin informacion",
+        "sin información",
+        "no informado",
+        "no informa",
+        "no registra",
+        "no aplica",
+    }
+)
+
+NUMERIC_PLACEHOLDERS = frozenset(
+    {
+        "",
+        "null",
+        "undefined",
+        "none",
+        "nan",
+        "n/a",
+        "n.a.",
+        "na",
+        "-",
+        "--",
+        "---",
+        "sin dato",
+        "sin informacion",
+        "sin información",
+        "no informado",
+        "no informa",
+        "no registra",
+    }
+)
+
+PARTICLES = frozenset(
+    {
+        "de",
+        "del",
+        "la",
+        "las",
+        "los",
+        "y",
+        "e",
+        "da",
+        "das",
+        "do",
+        "dos",
+        "van",
+        "von",
+        "der",
+        "den",
+        "ter",
+        "ten",
+    }
+)
+
+MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+MAX_DAYS = {
+    1: 31,
+    2: 29,
+    3: 31,
+    4: 30,
+    5: 31,
+    6: 30,
+    7: 31,
+    8: 31,
+    9: 30,
+    10: 31,
+    11: 30,
+    12: 31,
+}
+
+_CORRUPT_EDGES = "|^~*_=+[]{}()<>/\\\"“”,;:'.-"
+
+
+def is_placeholder(value: Any) -> bool:
+    """Indica si un valor es vacío o un texto usado como dato faltante."""
+    if value is None:
+        return True
+    normalized = str(value).strip().casefold()
+    return normalized in PLACEHOLDERS
+
+
+def calculate_rut_dv(body: str) -> str:
+    """Calcula el dígito verificador de un cuerpo de RUT chileno."""
+    normalized_body = str(body).strip()
+    if not normalized_body.isdigit() or not 1 <= len(normalized_body) <= 8:
+        raise ValueError(f"Cuerpo de RUT inválido: {body!r}")
+
+    factors = (2, 3, 4, 5, 6, 7)
+    total = sum(
+        int(digit) * factors[index % len(factors)]
+        for index, digit in enumerate(reversed(normalized_body))
+    )
+    remainder = 11 - (total % 11)
+
+    if remainder == 11:
+        return "0"
+    if remainder == 10:
+        return "K"
+    return str(remainder)
+
+
+def validate_rut_dv(body: str, dv: str) -> bool:
+    """Comprueba si el dígito verificador corresponde al cuerpo indicado."""
+    try:
+        expected = calculate_rut_dv(body)
+    except ValueError:
+        return False
+    return str(dv).strip().upper() == expected
+
+
+def normalize_rut(value: Any) -> str | None:
+    """Normaliza un RUT; retorna None si está vacío o es inválido."""
+    raw = "" if value is None else str(value).strip().upper()
+    if not raw:
+        return None
+
+    cleaned = raw.replace(".", "").replace(" ", "").replace("\u00a0", "")
+
+    if cleaned.count("-") == 1:
+        body, dv = cleaned.split("-", 1)
+    elif "-" not in cleaned and len(cleaned) > 1:
+        body, dv = cleaned[:-1], cleaned[-1]
+    else:
+        return None
+
+    if not body.isdigit() or not 7 <= len(body) <= 8:
+        return None
+    if len(dv) != 1 or dv not in "0123456789K":
+        return None
+    if dv != calculate_rut_dv(body):
+        return None
+
+    return f"{body}-{dv}"
+
+
+def split_rut(value: Any) -> tuple[str | None, str | None]:
+    """Devuelve cuerpo y DV de un RUT; (None, None) si es inválido."""
+    normalized = normalize_rut(value)
+    if normalized is None:
+        return None, None
+    body, dv = normalized.split("-", 1)
+    return body, dv
+
+
+def _title_token(token: str, index: int) -> str:
+    if index > 0 and token.casefold() in PARTICLES:
+        return token.casefold()
+    return token.title()
+
+
+def _clean_name_token(token: str) -> str | None:
+    if is_placeholder(token):
+        return None
+
+    cleaned = token.replace("´", "").replace("`", "").strip(_CORRUPT_EDGES)
+    if any(character.isdigit() for character in cleaned):
+        return None
+    if not any(character.isalpha() for character in cleaned):
+        return None
+
+    return cleaned
+
+
+def normalize_name(value: Any) -> str | None:
+    """Filtra términos inválidos y capitaliza los nombres válidos."""
+    text = " ".join(str(value).split()) if value is not None else ""
+    if not text or is_placeholder(text):
+        return None
+
+    tokens = [
+        cleaned
+        for token in text.split(" ")
+        if (cleaned := _clean_name_token(token)) is not None
+    ]
+    if not tokens:
+        return None
+
+    cleaned_name = " ".join(
+        _title_token(token, index) for index, token in enumerate(tokens)
+    )
+    if not any(character.isalpha() for character in cleaned_name):
+        return None
+
+    return cleaned_name
+
+
+def normalize_email(value: Any) -> str | None:
+    """Normaliza un email; retorna None si no es válido."""
+    raw = "" if value is None else str(value).strip()
+    if not raw or is_placeholder(raw):
+        return None
+
+    try:
+        validated = validate_email(raw.lower(), check_deliverability=False)
+    except EmailNotValidError:
+        return None
+
+    return validated.normalized.lower()
+
+
+def parse_date_dmy(
+    value: Any,
+    *,
+    min_date: date | None = None,
+    max_date: date | None = None,
+) -> date | None:
+    """Convierte una fecha d/m/yyyy o dd-mm-yyyy; retorna None si es inválida."""
+    raw = "" if value is None else str(value).strip()
+    if not raw or is_placeholder(raw):
+        return None
+
+    parsed: date | None = None
+    for date_format in ("%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            parsed = datetime.strptime(raw, date_format).date()
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        return None
+    if min_date is not None and parsed < min_date:
+        return None
+    if max_date is not None and parsed > max_date:
+        return None
+
+    return parsed
+
+
+def _strip_accents(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    )
+
+
+def parse_day_month_es(value: Any) -> tuple[int | None, int | None]:
+    """Convierte D - Mes a (día, mes); retorna (None, None) si es inválido."""
+    raw = "" if value is None else str(value).strip()
+    if not raw or is_placeholder(raw):
+        return None, None
+
+    parts = raw.split("-")
+    if len(parts) != 2:
+        return None, None
+
+    day_text, month_text = parts[0].strip(), parts[1].strip()
+    if not day_text.isdigit() or not month_text:
+        return None, None
+
+    day = int(day_text)
+    month_name = _strip_accents(month_text).casefold()
+    month = MONTHS.get(month_name)
+
+    if month is None or day < 1 or day > MAX_DAYS[month]:
+        return None, None
+
+    return day, month
+
+
+def parse_non_negative_bigint(
+    value: Any,
+    *,
+    default: int = 0,
+) -> int:
+    """Convierte a entero no negativo; retorna default si es inválido."""
+    raw = "" if value is None else str(value).strip()
+    if not raw or raw.casefold() in NUMERIC_PLACEHOLDERS:
+        return default
+
+    cleaned = raw.replace(".", "").replace(",", "")
+    if not cleaned.isdigit():
+        return default
+
+    return int(cleaned)

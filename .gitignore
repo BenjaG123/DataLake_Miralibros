@@ -25,6 +25,7 @@ data/
 # ============================
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 credentials.json
@@ -45,6 +46,7 @@ pip-wheel-metadata/
 # ============================
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 .pytest_cache/
 .mypy_cache/

@@ -300,8 +300,8 @@ def parse_day_month_es(value: Any) -> tuple[int | None, int | None]:
 def parse_non_negative_bigint(
     value: Any,
     *,
-    default: int = 0,
-) -> int:
+    default: int | None = 0,
+) -> int | None:
     """Convierte a entero no negativo; retorna default si es inválido."""
     raw = "" if value is None else str(value).strip()
     if not raw or raw.casefold() in NUMERIC_PLACEHOLDERS:

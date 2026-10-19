@@ -31,6 +31,7 @@ PLACEHOLDERS = frozenset(
 NUMERIC_PLACEHOLDERS = frozenset(
     {
         "",
+        ".",
         "null",
         "undefined",
         "none",

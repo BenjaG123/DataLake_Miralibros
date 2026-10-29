@@ -15,6 +15,14 @@ def read_html_grid_as_str(path: str | Path) -> pd.DataFrame:
     tablas HTML con extensión .xls. Pandas consume las filas de cabecera
     ``Dia``/``Meses`` como un ``MultiIndex``; acá se aplana para recuperar
     los nombres de meses y se validan los 31 días.
+
+    ``pd.read_html`` usa ``thousands=","`` por defecto, de modo que celdas
+    como ``"22,4"`` o ``"0,0"`` se convierten en ``224`` y ``0`` antes del
+    ``astype(str)``. Para conservar el texto crudo y la magnitud original se
+    pasa ``thousands=None``: el separador decimal chileno queda intacto y no
+    se eliminan separadores de miles. El resultado mantiene el contrato de
+    31 filas, 13 columnas (``Dia`` + 12 meses) y todos los valores como
+    ``str``.
     """
     file_path = Path(path)
     if not file_path.is_file():
@@ -27,6 +35,7 @@ def read_html_grid_as_str(path: str | Path) -> pd.DataFrame:
             flavor="lxml",
             header=None,
             keep_default_na=False,
+            thousands=None,
         )
     except ValueError as exc:
         if "No tables found" in str(exc):

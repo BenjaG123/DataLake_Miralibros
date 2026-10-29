@@ -97,6 +97,137 @@ def copy_rows(
     return count
 
 
+def upsert_table(
+    conn: Connection,
+    schema: str,
+    table: str,
+    columns: Sequence[str],
+    key_columns: Sequence[str],
+    rows: Iterable[Row],
+    *,
+    update_columns: Sequence[str] | None = None,
+    temp_table: str = "etl_upsert_staging",
+) -> int:
+    """Carga filas en una temporal y hace upsert por la clave de negocio.
+
+    Contrato:
+
+    - ``columns`` es la lista ordenada de columnas destino y de cada fila.
+    - ``key_columns`` debe existir como PK/UNIQUE en la tabla destino.
+    - ``update_columns`` son las columnas que se actualizan en conflicto con
+      ``EXCLUDED``; por defecto, todas menos las de la clave. Si se pasa una
+      lista vacía se usa ``DO NOTHING``.
+    - ``temp_table`` es el nombre de la tabla temporal de staging. Debe ser
+      único por llamada dentro de una misma transacción.
+    - Las filas deben venir ya deduplicadas por la clave: PostgreSQL rechaza
+      un mismo conflicto dos veces dentro de un solo ``INSERT``.
+    - Retorna la cantidad de filas copiadas al staging, no el desglose de
+      insertadas/actualizadas.
+
+    La tabla temporal se crea con ``LIKE ... INCLUDING DEFAULTS`` y
+    ``ON COMMIT DROP``, por lo que desaparece al cerrar la transacción. No se
+    vacía ni se reemplaza la tabla destino.
+    """
+    if not columns:
+        raise ValueError("Debe indicar al menos una columna para el upsert.")
+    if not key_columns:
+        raise ValueError("Debe indicar al menos una columna clave para el upsert.")
+
+    column_list = list(dict.fromkeys(columns))
+    if len(column_list) != len(columns):
+        raise ValueError("La lista de columnas contiene duplicados.")
+
+    key_list = list(key_columns)
+    missing_keys = [column for column in key_list if column not in column_list]
+    if missing_keys:
+        raise ValueError(
+            "Las columnas clave no están en la lista de columnas: "
+            f"{', '.join(missing_keys)}"
+        )
+
+    if update_columns is None:
+        update_list = [
+            column for column in column_list if column not in key_list
+        ]
+    else:
+        update_list = list(dict.fromkeys(update_columns))
+        missing_updates = [
+            column for column in update_list if column not in column_list
+        ]
+        if missing_updates:
+            raise ValueError(
+                "Las columnas a actualizar no están en la lista de columnas: "
+                f"{', '.join(missing_updates)}"
+            )
+        duplicated_keys = [
+            column for column in update_list if column in key_list
+        ]
+        if duplicated_keys:
+            raise ValueError(
+                "No se pueden actualizar columnas de la clave: "
+                f"{', '.join(duplicated_keys)}"
+            )
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "CREATE TEMP TABLE {} "
+                    "(LIKE {}.{} INCLUDING DEFAULTS) ON COMMIT DROP"
+                ).format(
+                    sql.Identifier(temp_table),
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                )
+            )
+
+        count = copy_rows(conn, "pg_temp", temp_table, column_list, rows)
+        if count == 0:
+            return 0
+
+        insert_columns = sql.SQL(", ").join(
+            sql.Identifier(column) for column in column_list
+        )
+        select_columns = sql.SQL(", ").join(
+            sql.Identifier(column) for column in column_list
+        )
+        conflict_columns = sql.SQL(", ").join(
+            sql.Identifier(column) for column in key_list
+        )
+
+        if update_list:
+            assignments = sql.SQL(", ").join(
+                sql.SQL("{} = EXCLUDED.{}").format(
+                    sql.Identifier(column),
+                    sql.Identifier(column),
+                )
+                for column in update_list
+            )
+            conflict_action = sql.SQL("DO UPDATE SET {}").format(assignments)
+        else:
+            conflict_action = sql.SQL("DO NOTHING")
+
+        statement = sql.SQL(
+            "INSERT INTO {}.{} ({}) "
+            "SELECT {} FROM {}.{} "
+            "ON CONFLICT ({}) {}"
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            insert_columns,
+            select_columns,
+            sql.Identifier("pg_temp"),
+            sql.Identifier(temp_table),
+            conflict_columns,
+            conflict_action,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(statement)
+
+    return count
+
+
 def replace_table(
     conn: Connection,
     schema: str,

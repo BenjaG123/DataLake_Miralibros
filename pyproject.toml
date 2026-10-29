@@ -1,0 +1,21 @@
+# Configuración mínima de herramientas de desarrollo de Miralibros.
+# No empaqueta el proyecto: no hay [build-system] ni [project].
+# Los pipelines se siguen ejecutando con `.venv\Scripts\python.exe -m etl...`.
+
+[tool.pytest.ini_options]
+# Los tests viven en tests/ y los imports son absolutos (`etl.*`).
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+# Misma versión que el venv del repo (Python 3.11).
+target-version = "py311"
+line-length = 88
+# Los XLSX/HTML generados por el script de fixtures no son código.
+extend-exclude = ["tests/fixtures/raw"]
+
+[tool.ruff.lint]
+# Conjunto conservador: errores, pyflakes e imports ordenados.
+# No se habilita `ruff format` para no reformatear el repo entero.
+select = ["E", "F", "I"]

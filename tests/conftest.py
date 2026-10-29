@@ -1,0 +1,89 @@
+"""Fixtures compartidas: crudos sintéticos generados y lecturas derivadas.
+
+Los archivos se generan en un directorio temporal de sesión con
+``tests/fixtures/build_fixtures.py``, nunca desde ``tests/fixtures/raw/``.
+Todo dato personal es ficticio y el generador usa una semilla fija.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+
+import pandas as pd
+import pytest
+
+from etl.readers import read_excel_as_str
+
+GENERADOR = Path(__file__).resolve().parent / "fixtures" / "build_fixtures.py"
+
+ARCHIVOS_ESPERADOS = (
+    "CLIENTES LIBRERIA.xlsx",
+    "STOCK LIBRERIA.xlsx",
+    "VENTAS LIBRERIA.xlsx",
+    "VENTAS CAFETERIA.xlsx",
+)
+
+
+def _cargar_generador() -> ModuleType:
+    """Carga build_fixtures.py por ruta sin convertirlo en paquete."""
+    indice = importlib.util.spec_from_file_location("build_fixtures", GENERADOR)
+    if indice is None or indice.loader is None:
+        raise RuntimeError(f"No se pudo cargar el generador: {GENERADOR}")
+    modulo = importlib.util.module_from_spec(indice)
+    indice.loader.exec_module(modulo)
+    return modulo
+
+
+_generador = _cargar_generador()
+build_all = _generador.build_all
+
+
+@pytest.fixture(scope="session")
+def generador_fixtures() -> ModuleType:
+    """Módulo del generador para pruebas de reproducibilidad."""
+    return _generador
+
+
+@pytest.fixture(scope="session")
+def directorio_fixtures(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Genera los cuatro XLSX sintéticos una sola vez por sesión."""
+    destino = tmp_path_factory.mktemp("fixtures_raw")
+    build_all(destino)
+    return destino
+
+
+@pytest.fixture(scope="session")
+def archivos_fixtures(directorio_fixtures: Path) -> dict[str, Path]:
+    """Rutas de los crudos generados, indexadas por entidad."""
+    return {
+        "clientes": directorio_fixtures / "CLIENTES LIBRERIA.xlsx",
+        "stock": directorio_fixtures / "STOCK LIBRERIA.xlsx",
+        "ventas_libreria": directorio_fixtures / "VENTAS LIBRERIA.xlsx",
+        "ventas_cafeteria": directorio_fixtures / "VENTAS CAFETERIA.xlsx",
+    }
+
+
+@pytest.fixture(scope="session")
+def clientes_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
+    """Clientes crudos leídos como texto desde el XLSX sintético."""
+    return read_excel_as_str(archivos_fixtures["clientes"])
+
+
+@pytest.fixture(scope="session")
+def stock_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
+    """Stock crudo leído como texto (todavía no hay pipeline de stock)."""
+    return read_excel_as_str(archivos_fixtures["stock"])
+
+
+@pytest.fixture(scope="session")
+def ventas_libreria_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
+    """Ventas de librería crudas leídas como texto."""
+    return read_excel_as_str(archivos_fixtures["ventas_libreria"])
+
+
+@pytest.fixture(scope="session")
+def ventas_cafeteria_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
+    """Ventas de cafetería crudas leídas como texto."""
+    return read_excel_as_str(archivos_fixtures["ventas_cafeteria"])

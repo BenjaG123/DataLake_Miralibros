@@ -1,0 +1,48 @@
+# Infraestructura local de Miralibros: solo PostgreSQL para la capa silver.
+# "a crear": este archivo no existía en el repo.
+#
+# Arranque:
+#   Copy-Item .env.example .env   # ajustar valores locales
+#   docker compose up -d
+#   docker compose ps             # esperar estado "healthy"
+#
+# El esquema y las tablas NO se crean aquí: los `sql/<entidad>.sql` usan el
+# placeholder {{schema}} y PostgreSQL no lo sustituye en
+# /docker-entrypoint-initdb.d. Se crean con:
+#   .venv\Scripts\python.exe -m etl.pipelines.clientes --schema-only
+
+name: miralibros
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    container_name: miralibros-postgres
+    environment:
+      # Defaults solo para desarrollo local; en producción las credenciales
+      # deben venir del gestor de secretos, nunca de este archivo.
+      POSTGRES_DB: ${POSTGRES_DB:-miralibros}
+      POSTGRES_USER: ${POSTGRES_USER:-miralibros}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-miralibros}
+      # POSTGRES_INITDB_ARGS se omite: la imagen ya inicializa en UTF8 y no
+      # aporta cambiar locale/encoding para este volumen de datos.
+    ports:
+      # Host 5434 -> contenedor 5432: 5432 y 5433 del host ya están ocupados
+      # por otros proyectos locales. Debe coincidir con el puerto de
+      # DATABASE_URL en .env.example.
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `$${VAR}` evita que Compose interpole y deja que la variable se
+      # resuelva dentro del contenedor.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  # Nombre explícito para no depender del nombre del proyecto de Compose.
+  pgdata:
+    name: miralibros-pgdata

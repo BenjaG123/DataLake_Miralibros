@@ -8,6 +8,7 @@ from etl.validators.fechas import (
     MAX_DAYS,
     MONTHS,
     parse_date_dmy,
+    parse_date_iso,
     parse_day_month_es,
 )
 from etl.validators.numeros import (
@@ -39,6 +40,7 @@ __all__ = [
     "normalize_name",
     "normalize_rut",
     "parse_date_dmy",
+    "parse_date_iso",
     "parse_day_month_es",
     "parse_decimal",
     "parse_integer",

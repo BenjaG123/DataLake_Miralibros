@@ -80,6 +80,37 @@ def parse_date_dmy(
     return parsed
 
 
+def parse_date_iso(
+    value: Any,
+    *,
+    min_date: date | None = None,
+    max_date: date | None = None,
+) -> date | None:
+    """Convierte una fecha ISO estricta ``YYYY-MM-DD``; retorna ``None`` si falla.
+
+    A diferencia de :func:`parse_date_dmy`, no acepta separadores ``/`` ni
+    componentes sin cero a la izquierda. La expresión regular se evalúa antes
+    de ``strptime`` para que variantes como ``2024-1-2`` no pasen.
+    """
+    raw = "" if value is None else str(value).strip()
+    if not raw or is_placeholder(raw):
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return None
+
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+    if min_date is not None and parsed < min_date:
+        return None
+    if max_date is not None and parsed > max_date:
+        return None
+
+    return parsed
+
+
 def _strip_accents(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value)
     return "".join(

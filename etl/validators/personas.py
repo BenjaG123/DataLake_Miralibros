@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 
 from email_validator import EmailNotValidError, validate_email
@@ -96,10 +97,34 @@ def split_rut(value: Any) -> tuple[str | None, str | None]:
     return body, dv
 
 
+def _capitalize_token(token: str) -> str:
+    """Capitaliza cada tramo alfabético de un token de nombre.
+
+    ``str.title()`` trata como separador a todo carácter sin caja, por lo que
+    una tilde descompuesta (``U+0301``) produce resultados como
+    ``"José MuñOz"``. Acá se normaliza a NFC y se capitaliza la primera letra
+    de cada tramo alfabético, conservando separadores internos como ``'`` o
+    ``-`` (``"O'Higgins"``, ``"Jean-Pierre"``).
+    """
+    normalized = unicodedata.normalize("NFC", token)
+    characters: list[str] = []
+    capitalize_next = True
+    for character in normalized:
+        if character.isalpha():
+            characters.append(
+                character.upper() if capitalize_next else character.lower()
+            )
+            capitalize_next = False
+        else:
+            characters.append(character)
+            capitalize_next = True
+    return "".join(characters)
+
+
 def _title_token(token: str, index: int) -> str:
     if index > 0 and token.casefold() in PARTICLES:
         return token.casefold()
-    return token.title()
+    return _capitalize_token(token)
 
 
 def _clean_name_token(token: str) -> str | None:

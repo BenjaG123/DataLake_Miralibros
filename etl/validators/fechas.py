@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from datetime import date, datetime
 from typing import Any
@@ -38,6 +39,16 @@ MAX_DAYS = {
     11: 30,
     12: 31,
 }
+
+# Acepta tanto el formato humano "14 de junio" como el histórico "14 - junio".
+# El separador "de" exige espacios para no admitir textos pegados ("14dejunio");
+# el guión tolera espacios a ambos lados ("2-Agosto", "2 -Agosto", "2- agosto").
+_DAY_MONTH_PATTERN = re.compile(
+    r"^(?P<day>\d{1,2})(?:\s+de\s+|\s*-\s*)(?P<month>[a-z]+)$"
+)
+
+# Puntuación final tolerada ("14 de junio.", "14 de junio,").
+_TRAILING_PUNCTUATION = ".,;:"
 
 
 def parse_date_dmy(
@@ -76,23 +87,33 @@ def _strip_accents(value: str) -> str:
     )
 
 
+def _normalize_month_text(value: str) -> str:
+    """Quita acentos, convierte espacios duros en normales y pasa a minúsculas."""
+    return _strip_accents(value.replace("\u00a0", " ")).casefold()
+
+
 def parse_day_month_es(value: Any) -> tuple[int | None, int | None]:
-    """Convierte D - Mes a (día, mes); retorna (None, None) si es inválido."""
+    """Convierte "D de Mes" o "D - Mes" a (día, mes); (None, None) si es inválido.
+
+    Acepta el formato humano sin año ("14 de junio", "2-Agosto") y mantiene la
+    compatibilidad con el histórico separado por guión ("14 - junio"). Tolera
+    mayúsculas, acentos, espacios repetidos, nbsp y puntuación final. No acepta
+    años ("14 de junio de 1990") ni fechas numéricas ("1990-06-14", "14/06"):
+    el año lo estima el pipeline de clientes a partir del RUT.
+    """
     raw = "" if value is None else str(value).strip()
     if not raw or is_placeholder(raw):
         return None, None
 
-    parts = raw.split("-")
-    if len(parts) != 2:
+    normalized = (
+        _normalize_month_text(raw).strip().rstrip(_TRAILING_PUNCTUATION).strip()
+    )
+    match = _DAY_MONTH_PATTERN.fullmatch(normalized)
+    if match is None:
         return None, None
 
-    day_text, month_text = parts[0].strip(), parts[1].strip()
-    if not day_text.isdigit() or not month_text:
-        return None, None
-
-    day = int(day_text)
-    month_name = _strip_accents(month_text).casefold()
-    month = MONTHS.get(month_name)
+    day = int(match.group("day"))
+    month = MONTHS.get(match.group("month"))
 
     if month is None or day < 1 or day > MAX_DAYS[month]:
         return None, None

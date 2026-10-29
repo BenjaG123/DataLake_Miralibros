@@ -3,7 +3,10 @@
 Python ETL that normalizes Miralibros raw files into PostgreSQL (`silver` layer).
 
 ## Setup
-- Use the provisioned venv: `.venv/bin/python` (Python 3.14). Deps are pinned in `requirements.txt`.
+- Use the provisioned venv: `.venv\Scripts\python.exe` (Python 3.11). Deps are pinned in
+  `requirements.txt` but **not pre-installed**; run
+  `.venv\Scripts\python.exe -m pip install -r requirements.txt` first. System `python`
+  (3.12) has no deps either.
 - Copy `.env.example` to `.env`; `DATABASE_URL` is required. `PG_SCHEMA` defaults to `silver`.
 - `bronze/` and `.env` are gitignored. Raw source files are not in the repo and must be
   placed locally with their exact original names (e.g. `bronze/CLIENTES LIBRERIA.xlsx`).
@@ -12,9 +15,9 @@ Python ETL that normalizes Miralibros raw files into PostgreSQL (`silver` layer)
 
 ## Commands
 Run from the repo root (imports are absolute `etl.*`; there is no console script):
-- `.venv/bin/python -m etl.pipelines.clientes`
-- `.venv/bin/python -m etl.pipelines.clientes --dry-run` (reads/transforms, no DB writes)
-- `.venv/bin/python -m etl.pipelines.clientes --schema-only` (creates schema/table only)
+- `.venv\Scripts\python.exe -m etl.pipelines.clientes`
+- `.venv\Scripts\python.exe -m etl.pipelines.clientes --dry-run` (reads/transforms, no DB writes)
+- `.venv\Scripts\python.exe -m etl.pipelines.clientes --schema-only` (creates schema/table only)
 - `--input PATH` overrides the source file; `--log-level DEBUG` shows rejection reasons.
 
 ## Layout

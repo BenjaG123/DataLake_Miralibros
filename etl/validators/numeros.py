@@ -69,3 +69,27 @@ def parse_integer(
         return None
 
     return result
+
+
+def parse_non_negative_bigint_or_zero(value: Any) -> int | None:
+    """Convierte a entero no negativo tratando vacíos y placeholders como 0.
+
+    - ``None``, cadena vacía o un texto de ``NUMERIC_PLACEHOLDERS``
+      (por ejemplo ``"sin dato"``, ``"-"``, ``"null"``) se convierten en ``0``.
+    - Un entero no negativo, con o sin separadores de miles (``"1.250"``,
+      ``"12.000"``), se devuelve como ``int``. ``"0"`` es un valor válido y
+      también devuelve ``0``.
+    - Un valor realmente inválido (texto no numérico o negativo) devuelve
+      ``None`` para que el llamador descarte la fila.
+
+    Nunca lanza excepciones.
+    """
+    raw = "" if value is None else str(value).strip()
+    if not raw or raw.casefold() in NUMERIC_PLACEHOLDERS:
+        return 0
+
+    cleaned = raw.replace(".", "").replace(",", "")
+    if not cleaned.isdigit():
+        return None
+
+    return int(cleaned)

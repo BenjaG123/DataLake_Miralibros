@@ -21,7 +21,7 @@ from etl.validators import (
     normalize_rut,
     parse_date_dmy,
     parse_day_month_es,
-    parse_non_negative_bigint,
+    parse_non_negative_bigint_or_zero,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,15 +158,15 @@ def transform_row(
             if cumple is None:
                 errors.append("cumple inválido")
 
-    puntos = parse_non_negative_bigint(row["Puntos"], default=None)
+    puntos = parse_non_negative_bigint_or_zero(row["Puntos"])
     if puntos is None:
         errors.append("puntos inválido")
 
-    compras = parse_non_negative_bigint(row["Compras"], default=None)
+    compras = parse_non_negative_bigint_or_zero(row["Compras"])
     if compras is None:
         errors.append("compras inválido")
 
-    canjes = parse_non_negative_bigint(row["Canjes"], default=None)
+    canjes = parse_non_negative_bigint_or_zero(row["Canjes"])
     if canjes is None:
         errors.append("canjes inválido")
 

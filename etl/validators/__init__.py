@@ -14,6 +14,7 @@ from etl.validators.numeros import (
     parse_decimal,
     parse_integer,
     parse_non_negative_bigint,
+    parse_non_negative_bigint_or_zero,
 )
 from etl.validators.personas import (
     PARTICLES,
@@ -42,6 +43,7 @@ __all__ = [
     "parse_decimal",
     "parse_integer",
     "parse_non_negative_bigint",
+    "parse_non_negative_bigint_or_zero",
     "parse_precipitation",
     "parse_wind",
     "split_rut",

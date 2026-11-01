@@ -74,7 +74,7 @@ def clientes_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
 
 @pytest.fixture(scope="session")
 def stock_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
-    """Stock crudo leído como texto (todavía no hay pipeline de stock)."""
+    """Stock crudo leído como texto desde el XLSX sintético."""
     return read_excel_as_str(archivos_fixtures["stock"])
 
 

@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from etl.readers import read_excel_as_str
+from tests.fixtures.clima import escribir_grillas_clima
 
 GENERADOR = Path(__file__).resolve().parent / "fixtures" / "build_fixtures.py"
 
@@ -87,3 +88,11 @@ def ventas_libreria_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
 def ventas_cafeteria_df(archivos_fixtures: dict[str, Path]) -> pd.DataFrame:
     """Ventas de cafetería crudas leídas como texto."""
     return read_excel_as_str(archivos_fixtures["ventas_cafeteria"])
+
+
+@pytest.fixture
+def clima_dir(tmp_path: Path) -> Path:
+    """Genera las 7 grillas HTML sintéticas de clima."""
+    target = tmp_path / "clima"
+    escribir_grillas_clima(target)
+    return target

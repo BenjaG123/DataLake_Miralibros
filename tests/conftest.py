@@ -1,8 +1,10 @@
 """Fixtures compartidas: crudos sintéticos generados y lecturas derivadas.
 
-Los archivos se generan en un directorio temporal de sesión con
-``tests/fixtures/build_fixtures.py``, nunca desde ``tests/fixtures/raw/``.
-Todo dato personal es ficticio y el generador usa una semilla fija.
+La mayoría de los tests usan un directorio temporal de sesión generado con
+``tests/fixtures/build_fixtures.py``. Los tests de stock y ventas leen los
+crudos versionados de ``tests/fixtures/raw/``; como esos XLSX están
+gitignored, ``directorio_raw`` los regenera si falta cualquiera. Todo dato
+personal es ficticio y el generador usa una semilla fija.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from etl.readers import read_excel_as_str
 from tests.fixtures.clima import escribir_grillas_clima
 
 GENERADOR = Path(__file__).resolve().parent / "fixtures" / "build_fixtures.py"
+DIRECTORIO_RAW = Path(__file__).resolve().parent / "fixtures" / "raw"
 
 ARCHIVOS_ESPERADOS = (
     "CLIENTES LIBRERIA.xlsx",
@@ -63,6 +66,35 @@ def archivos_fixtures(directorio_fixtures: Path) -> dict[str, Path]:
         "stock": directorio_fixtures / "STOCK LIBRERIA.xlsx",
         "ventas_libreria": directorio_fixtures / "VENTAS LIBRERIA.xlsx",
         "ventas_cafeteria": directorio_fixtures / "VENTAS CAFETERIA.xlsx",
+    }
+
+
+@pytest.fixture(scope="session")
+def directorio_raw() -> Path:
+    """Garantiza los crudos versionados en ``tests/fixtures/raw/``.
+
+    Los XLSX están gitignored, así que un clon limpio (por ejemplo CI) no los
+    trae. Si falta cualquiera de los cuatro, se regeneran ahí mismo con
+    ``build_all()`` antes de que los tests los lean.
+    """
+    faltantes = [
+        nombre
+        for nombre in ARCHIVOS_ESPERADOS
+        if not (DIRECTORIO_RAW / nombre).is_file()
+    ]
+    if faltantes:
+        build_all(DIRECTORIO_RAW)
+    return DIRECTORIO_RAW
+
+
+@pytest.fixture(scope="session")
+def archivos_raw(directorio_raw: Path) -> dict[str, Path]:
+    """Rutas de los crudos versionados, indexadas por entidad."""
+    return {
+        "clientes": directorio_raw / "CLIENTES LIBRERIA.xlsx",
+        "stock": directorio_raw / "STOCK LIBRERIA.xlsx",
+        "ventas_libreria": directorio_raw / "VENTAS LIBRERIA.xlsx",
+        "ventas_cafeteria": directorio_raw / "VENTAS CAFETERIA.xlsx",
     }
 
 

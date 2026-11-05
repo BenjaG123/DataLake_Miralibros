@@ -293,7 +293,19 @@ def _log_rejection_summary(rejected: Sequence[Mapping[str, Any]]) -> None:
 
 
 def _refresh_history(conn: db.Connection, schema: str) -> tuple[int, int]:
-    """Cierra versiones cambiadas y abre las nuevas en el historial SCD2."""
+    """Cierra versiones cambiadas y abre las nuevas en el historial SCD2.
+
+    Se usan dos comparaciones complementarias, ambas null-safe:
+
+    - **Cierre**: la versión vigente se cierra cuando cambia *cualquier*
+      columna de ``HISTORY_COMPARE_COLUMNS`` (comparaciones unidas con
+      ``OR``). Si se unieran con ``AND`` solo se cerraría cuando todas
+      cambiaran a la vez, dejando la versión vieja como vigente y chocando
+      contra el índice único parcial ``stock_historial_isbn_actual_uidx``.
+    - **Inserción**: solo se abre una versión nueva si *todas* las columnas
+      son iguales a la vigente (``IS NOT DISTINCT FROM`` unidas con ``AND``),
+      de modo que una corrida idéntica no duplique historial.
+    """
     current = sql.Identifier(schema, TABLE)
     history = sql.Identifier(schema, HISTORY_TABLE)
     source_alias = sql.Identifier("s")
@@ -302,8 +314,9 @@ def _refresh_history(conn: db.Connection, schema: str) -> tuple[int, int]:
     def _column(alias: sql.Identifier, column: str) -> sql.Composable:
         return sql.SQL("{}.{}").format(alias, sql.Identifier(column))
 
-    def _compare(operator: str) -> sql.Composable:
-        return sql.SQL(" AND ").join(
+    def _compare(operator: str, joiner: str = " AND ") -> sql.Composable:
+        """Combina comparaciones null-safe con ``AND`` u ``OR``."""
+        return sql.SQL(joiner).join(
             sql.SQL("{left} {operator} {right}").format(
                 left=_column(history_alias, column),
                 operator=sql.SQL(operator),
@@ -312,6 +325,8 @@ def _refresh_history(conn: db.Connection, schema: str) -> tuple[int, int]:
             for column in HISTORY_COMPARE_COLUMNS
         )
 
+    # "Alguna columna cambió": ``IS DISTINCT FROM`` es null-safe, así que
+    # NULL -> valor y valor -> NULL también cuentan como cambio.
     close_statement = sql.SQL(
         "UPDATE {history} AS {h} "
         "SET {valid_to} = {source_updated_at}, {is_current} = FALSE "
@@ -329,7 +344,7 @@ def _refresh_history(conn: db.Connection, schema: str) -> tuple[int, int]:
         history_isbn=_column(history_alias, "isbn"),
         source_isbn=_column(source_alias, "isbn"),
         history_is_current=_column(history_alias, "is_current"),
-        distinct=_compare("IS DISTINCT FROM"),
+        distinct=_compare("IS DISTINCT FROM", " OR "),
     )
 
     history_columns = ("isbn", *HISTORY_COMPARE_COLUMNS)
@@ -359,6 +374,8 @@ def _refresh_history(conn: db.Connection, schema: str) -> tuple[int, int]:
         )
     )
 
+    # "Todas las columnas iguales": se evita abrir una versión duplicada
+    # cuando la corrida repite exactamente los mismos valores.
     insert_statement = sql.SQL(
         "INSERT INTO {history} ({columns}, {audit_columns}) "
         "SELECT {select_columns}, {audit_select} "

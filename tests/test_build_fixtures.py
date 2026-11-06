@@ -156,6 +156,7 @@ def test_compras_son_montos_y_cuadran_con_tickets(
     clients = ventas.load_clientes(tmp_path / "CLIENTES LIBRERIA.xlsx")
     tickets = _leer_tickets(tmp_path)
 
+    assert len(clients) == 136
     assignments = ventas.assign_clients(tickets, clients)
     ticket_por_clave = {
         (ticket.origen, ticket.correlativo): ticket for ticket in tickets
@@ -178,7 +179,8 @@ def test_compras_son_montos_y_cuadran_con_tickets(
                 assert ticket_por_clave[clave].fecha >= client.alta
 
     assert any(conteo >= 2 for conteo in conteos.values())
-    assert len(assignments) < len(tickets)
+    assert len(assignments) == 22
+    assert len(tickets) - len(assignments) == 185
     assert len(assignments) == len(set(assignments))
 
 

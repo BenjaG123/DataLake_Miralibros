@@ -18,16 +18,15 @@ import pytest
 from etl.pipelines.clientes import COLUMNS, transform, transform_row
 
 TOTAL_FILAS = 150
-VALIDAS_ESPERADAS = 127
-DESCARTADAS_ESPERADAS = 23
+VALIDAS_ESPERADAS = 136
+DESCARTADAS_ESPERADAS = 14
+# Nombre, Email y Cumple. ya no rechazan filas. Los únicos motivos son RUT,
+# Alta y Canal.
 MOTIVOS_ESPERADOS = Counter(
     {
         "RUT inválido": 8,
         "alta inválida": 4,
-        "cumple inválido": 4,
-        "email inválido": 3,
         "canal inválido": 2,
-        "nombre inválido": 2,
     }
 )
 
@@ -36,6 +35,7 @@ COLUMNS_ESPERADAS = (
     "alta",
     "canal",
     "edad",
+    "mes_cumple",
     "puntos",
     "compras",
     "canjes",
@@ -95,9 +95,9 @@ class TestTransformLote:
 
         assert filas
         for fila in filas:
-            assert len(fila) == len(COLUMNS) == 7
+            assert len(fila) == len(COLUMNS) == 8
 
-            cliente_id, alta, canal, edad, *contadores = fila
+            cliente_id, alta, canal, edad, mes_cumple, *contadores = fila
             assert PATRON_CLIENTE_ID.fullmatch(cliente_id)
             # El contrato permite NULL cuando una Alta futura se anula.
             assert alta is None or isinstance(alta, date)
@@ -105,9 +105,11 @@ class TestTransformLote:
             assert isinstance(edad, int)
             assert not isinstance(edad, bool)
             assert 0 <= edad <= 120
+            assert mes_cumple is None or 1 <= mes_cumple <= 12
 
             assert len(contadores) == 3
-            for contador in contadores:
+            for indice, contador in enumerate(contadores, start=5):
+                assert fila[indice] is contador
                 assert isinstance(contador, int)
                 assert not isinstance(contador, bool)
                 assert contador >= 0
@@ -130,7 +132,7 @@ class TestTransformLote:
         filas, _ = transform(clientes_df)
 
         for fila in filas:
-            assert all(contador is not None for contador in fila[4:7])
+            assert all(contador is not None for contador in fila[5:8])
 
 
 class TestTransformFila:
@@ -147,7 +149,7 @@ class TestTransformFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[4] == 0
+        assert resultado[5] == 0
 
     def test_puntos_no_numerico_descarta_con_motivo(self) -> None:
         fila = _fila_valida()
@@ -158,7 +160,7 @@ class TestTransformFila:
         assert resultado is None
         assert motivo == "puntos inválido"
 
-    def test_cumple_con_de_no_es_motivo_de_rechazo(self) -> None:
+    def test_cumple_con_de_extrae_el_mes_y_no_descarta(self) -> None:
         fila = _fila_valida()
         fila["Cumple."] = "14 de junio"
 
@@ -167,8 +169,27 @@ class TestTransformFila:
         assert motivo is None
         assert "cumple inválido" not in (motivo or "")
         assert resultado is not None
+        assert resultado[4] == 6
         # La edad deriva del año estimado por RUT, no del texto del cumpleaños.
         assert isinstance(resultado[3], int)
+        assert resultado[3] == 68
+
+    @pytest.mark.parametrize(
+        "valor",
+        ["32 - junio", "30 - febrero", "14 - mes inexistente", "no parseable"],
+    )
+    def test_cumple_no_parseable_deja_mes_none_y_no_descarta(
+        self,
+        valor: str,
+    ) -> None:
+        fila = _fila_valida()
+        fila["Cumple."] = valor
+
+        resultado, motivo = transform_row(fila, reference_year=2024)
+
+        assert motivo is None
+        assert resultado is not None
+        assert resultado[4] is None
         assert resultado[3] == 68
 
     def test_nombre_cero_textual_no_descarta_y_genera_cliente_id(self) -> None:
@@ -190,6 +211,34 @@ class TestTransformFila:
         assert motivo is None
         assert resultado is not None
         assert PATRON_CLIENTE_ID.fullmatch(resultado[0])
+
+    @pytest.mark.parametrize(
+        ("nombre", "email"),
+        [
+            ("123 ///", "correo-sin-arroba.cl"),
+            ("***", "ana@@gmail.com"),
+            ("", ""),
+            (None, None),
+            (" (sin verificar)", "nombre apellido@gmail.com"),
+        ],
+    )
+    def test_nombre_y_email_arbitrarios_no_rechazan(
+        self,
+        nombre: object,
+        email: object,
+    ) -> None:
+        fila = _fila_valida()
+        fila["Nombre"] = nombre
+        fila["Email"] = email
+
+        resultado, motivo = transform_row(fila, reference_year=2024)
+
+        assert motivo is None
+        assert resultado is not None
+        assert PATRON_CLIENTE_ID.fullmatch(resultado[0])
+        assert len(resultado) == 8
+        for prohibida in ("rut", "nombre", "email", "cumple"):
+            assert prohibida not in COLUMNS
 
     def test_alta_futura_queda_none_y_advierte_sin_rut_crudo(
         self, caplog: pytest.LogCaptureFixture

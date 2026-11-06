@@ -84,10 +84,12 @@ Run from the repo root (imports are absolute `etl.*`; there is no console script
 - `ventas.hora_simulada` es sintética: se deriva de un hash de
   `origen|correlativo|fecha`, no proviene del POS y es idempotente por ticket. Los
   domingos queda `NULL`.
-- `clientes` persiste solo `cliente_id` (HMAC-SHA256 del RUT normalizado con `PII_HASH_KEY`),
-  `alta`, `canal`, `edad`, `puntos`, `compras` y `canjes`. RUT, nombre, email y cumpleaños se
-  validan en memoria y no se guardan. Un `"0"` textual en nombre/email no rechaza la fila; una
-  `Alta` futura queda `NULL` con warning. Cambiar `PII_HASH_KEY` cambia todos los `cliente_id`.
+- `clientes` persiste 8 columnas: `cliente_id` (HMAC-SHA256 del RUT normalizado con
+  `PII_HASH_KEY`), `alta`, `canal`, `edad`, `mes_cumple`, `puntos`, `compras` y `canjes`.
+  RUT, nombre, email y cumpleaños no se guardan. `Nombre` y `Email` se ignoran por completo y
+  no rechazan filas; `Cumple.` solo aporta `mes_cumple` (`NULL` si no es parseable) y tampoco
+  rechaza. La `edad` se deriva únicamente del RUT y una `Alta` futura queda `NULL` con warning.
+  Cambiar `PII_HASH_KEY` cambia todos los `cliente_id`.
 - SQL files are read and executed whole; `{{schema}}` is substituted only after identifier
   validation. Use `psycopg.sql.Identifier` for identifiers, never f-strings.
 - `ventas --schema-only` aislado requiere `{{schema}}.clientes` creado antes por la FK de

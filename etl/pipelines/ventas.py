@@ -665,7 +665,7 @@ def load_clientes(path: str | Path) -> list[Client]:
         by_id[cliente_id] = Client(
             cliente_id=cliente_id,
             alta=row[1],
-            compras=row[5],
+            compras=row[6],
         )
 
     clients = list(by_id.values())

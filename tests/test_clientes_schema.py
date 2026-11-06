@@ -24,6 +24,7 @@ TIPOS_ESPERADOS = {
     "alta": "DATE",
     "canal": "VARCHAR(10)",
     "edad": "INTEGER",
+    "mes_cumple": "INTEGER",
     "puntos": "BIGINT",
     "compras": "BIGINT",
     "canjes": "BIGINT",
@@ -63,9 +64,9 @@ def _columnas_ddl() -> dict[str, str]:
     return columnas
 
 
-def test_ddl_define_las_siete_columnas_en_orden() -> None:
+def test_ddl_define_las_ocho_columnas_en_orden() -> None:
     assert list(_columnas_ddl()) == list(COLUMNS)
-    assert len(COLUMNS) == 7
+    assert len(COLUMNS) == 8
 
 
 def test_ddl_tipos_coinciden_con_el_contrato() -> None:
@@ -104,6 +105,7 @@ def test_ddl_no_persiste_datos_identificatorios(columna: str) -> None:
         r"cliente_id\s*~\s*'\^\[0-9a-f\]\{64\}\$'",
         r"canal\s+IN\s*\(\s*'Local'\s*,\s*'Web'\s*\)",
         r"edad\s+BETWEEN\s+0\s+AND\s+120",
+        r"mes_cumple\s+IS\s+NULL\s+OR\s+mes_cumple\s+BETWEEN\s+1\s+AND\s+12",
         r"puntos\s*>=\s*0",
         r"compras\s*>=\s*0",
         r"canjes\s*>=\s*0",

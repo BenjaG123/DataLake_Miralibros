@@ -150,11 +150,12 @@ Flags comunes:
 - Los `cliente_id` se asignan con subset sum exacto de montos. Un cliente sin combinación
   exacta queda sin asignación y los tickets sobrantes quedan anónimos (`cliente_id = NULL`).
   `clientes.compras` es monto monetario histórico, no cantidad de transacciones.
-- `clientes` valida RUT, nombre, email y cumpleaños en memoria, pero solo persiste datos no
-  identificatorios: `cliente_id` (HMAC-SHA256 del RUT normalizado), `alta`, `canal`, `edad`,
-  `puntos`, `compras` y `canjes`. No se guardan RUT, nombre, email ni cumpleaños. Un `"0"`
-  textual en nombre/email no rechaza la fila; una Alta futura se guarda como `alta = NULL`
-  con warning. La `edad` se deriva del año de nacimiento estimado desde el RUT.
+- `clientes` persiste 8 columnas no identificatorias: `cliente_id` (HMAC-SHA256 del RUT
+  normalizado), `alta`, `canal`, `edad`, `mes_cumple`, `puntos`, `compras` y `canjes`.
+  RUT, nombre, email y cumpleaños no se guardan. `Nombre` y `Email` se ignoran por completo
+  y no rechazan filas. `Cumple.` solo aporta `mes_cumple` (queda `NULL` si no es parseable)
+  y tampoco rechaza. La `edad` se deriva únicamente del año de nacimiento estimado desde el
+  RUT; una Alta futura se guarda como `alta = NULL` con warning.
 
 `ventas --schema-only` ejecutado de forma aislada requiere que `silver.clientes` ya exista,
 porque `ventas_ticket.cliente_id` tiene FK a `silver.clientes(cliente_id)`. El runner

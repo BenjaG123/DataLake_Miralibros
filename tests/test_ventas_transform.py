@@ -1013,7 +1013,7 @@ class TestLoadClientes:
     ) -> None:
         clients = load_clientes(archivos_fixtures["clientes"])
 
-        assert len(clients) == 127
+        assert len(clients) == 136
         assert len({client.cliente_id for client in clients}) == len(clients)
         assert all(
             _es_cliente_id(client.cliente_id) for client in clients

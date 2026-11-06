@@ -24,8 +24,6 @@ from etl.config import (
 from etl.readers import read_excel_as_str, require_columns
 from etl.validators import (
     is_placeholder,
-    normalize_email,
-    normalize_name,
     normalize_rut,
     parse_date_dmy,
     parse_day_month_es,
@@ -55,12 +53,13 @@ COLUMNS = (
     "alta",
     "canal",
     "edad",
+    "mes_cumple",
     "puntos",
     "compras",
     "canjes",
 )
 
-Row = tuple[str, date | None, str, int, int, int, int]
+Row = tuple[str, date | None, str, int, int | None, int, int, int]
 
 CANAL_MAP = {
     "local": "Local",
@@ -123,15 +122,6 @@ def estimar_anio(rut: str, *, reference_year: int = REFERENCE_YEAR) -> int | Non
     return None
 
 
-def _build_cumple_date(year: int, month: int, day: int) -> date | None:
-    try:
-        return date(year, month, day)
-    except ValueError:
-        if month == 2 and day == 29:
-            return date(year, 2, 28)
-        return None
-
-
 def transform_row(
     row: Mapping[str, Any],
     *,
@@ -139,9 +129,11 @@ def transform_row(
 ) -> tuple[Row | None, str | None]:
     """Transforma una fila; retorna (fila_normalizada, motivo_de_descarte).
 
-    Valida el RUT, nombre, email y cumpleaños para conservar las reglas de
-    calidad, pero la fila de salida solo contiene el ``cliente_id`` anónimo y
-    datos no identificatorios.
+    Valida el RUT, el alta y el canal. ``Nombre`` y ``Email`` se ignoran por
+    completo: no se validan ni se persisten. ``Cumple.`` solo se usa para
+    derivar ``mes_cumple`` cuando es parseable; si no lo es, la fila sigue
+    válida con ``mes_cumple = NULL``. La edad se calcula exclusivamente desde
+    el año estimado a partir del RUT, sin depender de ``Cumple.``.
     """
     errors: list[str] = []
 
@@ -149,18 +141,6 @@ def transform_row(
     cliente_id = generar_cliente_id(rut) if rut is not None else None
     if cliente_id is None:
         errors.append("RUT inválido")
-
-    if (
-        str(row["Nombre"]).strip() != "0"
-        and normalize_name(row["Nombre"]) is None
-    ):
-        errors.append("nombre inválido")
-
-    if (
-        str(row["Email"]).strip() != "0"
-        and normalize_email(row["Email"]) is None
-    ):
-        errors.append("email inválido")
 
     alta = parse_date_dmy(row["Alta"], min_date=MIN_ALTA_DATE)
     if alta is None:
@@ -177,23 +157,18 @@ def transform_row(
     if canal is None:
         errors.append("canal inválido")
 
-    edad: int | None = None
-    cumple: date | None = None
     day, month = parse_day_month_es(row["Cumple."])
-    if day is None or month is None:
-        errors.append("cumple inválido")
-    elif rut is not None:
+    mes_cumple = month if day is not None and month is not None else None
+
+    edad: int | None = None
+    if rut is not None:
         year = estimar_anio(rut, reference_year=reference_year)
         if year is None:
             errors.append("año estimado inválido")
         else:
-            cumple = _build_cumple_date(year, month, day)
-            if cumple is None:
-                errors.append("cumple inválido")
-            else:
-                edad = reference_year - cumple.year
-                if not 0 <= edad <= 120:
-                    errors.append("edad inválida")
+            edad = reference_year - year
+            if not 0 <= edad <= 120:
+                errors.append("edad inválida")
 
     puntos = parse_non_negative_bigint_or_zero(row["Puntos"])
     if puntos is None:
@@ -214,7 +189,7 @@ def transform_row(
 
     normalized_row = cast(
         Row,
-        (cliente_id, alta, canal, edad, puntos, compras, canjes),
+        (cliente_id, alta, canal, edad, mes_cumple, puntos, compras, canjes),
     )
     return normalized_row, None
 

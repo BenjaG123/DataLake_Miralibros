@@ -572,7 +572,9 @@ def _cumple(rng: random.Random, indice: int) -> tuple[Any, bool]:
     dia = rng.randint(1, MAX_DIAS[mes_indice])
     mes = MESES_ES[mes_indice]
 
-    # Formato "14 de junio": no lo acepta el validador actual (exige guión).
+    # ``parse_day_month_es`` acepta tanto "14 de junio" como "14 - junio".
+    # Se generan variantes con espacios y mayúsculas para ejercitar la
+    # normalización; todas siguen siendo parseables.
     if rng.random() < 0.35:
         estilo = rng.choice(("simple", "espacios", "mayusculas"))
         if estilo == "espacios":
@@ -581,7 +583,6 @@ def _cumple(rng: random.Random, indice: int) -> tuple[Any, bool]:
             return f"{dia} De {mes.capitalize()}", True
         return f"{dia} de {mes}", True
 
-    # Formato "14 - junio": es el único que parse_day_month_es acepta.
     estilo = rng.choice(("simple", "espacios", "mayusculas"))
     if estilo == "espacios":
         return f"  {dia}  -  {mes}  ", False
@@ -1307,14 +1308,14 @@ def _verificar_invariantes(
     filas_clientes, rechazos_clientes = clientes_pipeline.transform(
         _como_texto(clientes)
     )
-    assert len(filas_clientes) == 127, "se esperaban 127 clientes válidos"
-    assert len(rechazos_clientes) == 23, "se esperaban 23 clientes rechazados"
+    assert len(filas_clientes) == 136, "se esperaban 136 clientes válidos"
+    assert len(rechazos_clientes) == 14, "se esperaban 14 clientes rechazados"
 
     clients = [
         ventas_pipeline.Client(
             cliente_id=fila[0],
             alta=fila[1],
-            compras=fila[5],
+            compras=fila[6],
         )
         for fila in filas_clientes
     ]

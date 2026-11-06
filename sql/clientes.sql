@@ -2,8 +2,10 @@
 -- El pipeline crea la tabla si no existe y luego reemplaza su contenido.
 --
 -- No se persiste ningún dato identificatorio. ``cliente_id`` es un
--- HMAC-SHA256 determinístico y ``edad`` se deriva del año de nacimiento
--- estimado; ambos son datos no identificatorios.
+-- HMAC-SHA256 determinístico y ``edad`` se deriva únicamente del año de
+-- nacimiento estimado desde el identificador normalizado; ``mes_cumple``
+-- solo conserva el mes (1-12) cuando el dato crudo es parseable y queda NULL
+-- en caso contrario.
 
 CREATE SCHEMA IF NOT EXISTS {{schema}};
 
@@ -12,6 +14,7 @@ CREATE TABLE IF NOT EXISTS {{schema}}.clientes (
     alta        DATE,
     canal       VARCHAR(10) NOT NULL,
     edad        INTEGER     NOT NULL,
+    mes_cumple  INTEGER,
     puntos      BIGINT      DEFAULT 0 NOT NULL,
     compras     BIGINT      DEFAULT 0 NOT NULL,
     canjes      BIGINT      DEFAULT 0 NOT NULL,
@@ -24,6 +27,9 @@ CREATE TABLE IF NOT EXISTS {{schema}}.clientes (
 
     CONSTRAINT clientes_edad_valida
         CHECK (edad BETWEEN 0 AND 120),
+
+    CONSTRAINT clientes_mes_cumple_valido
+        CHECK (mes_cumple IS NULL OR mes_cumple BETWEEN 1 AND 12),
 
     CONSTRAINT clientes_puntos_no_negativo
         CHECK (puntos >= 0),

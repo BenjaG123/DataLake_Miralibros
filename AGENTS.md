@@ -73,24 +73,25 @@ Run from the repo root (imports are absolute `etl.*`; there is no console script
   `--catalogo-cafeteria`). No consulta la base para clientes/stock/catálogo y `--dry-run` no
   abre conexión.
 - `clientes.compras` es **monto monetario histórico en CLP**, no cantidad de transacciones.
-- `ventas_ticket` (PK `(origen, correlativo)`, FK `rut_cliente -> clientes(rut)`) y
+- `ventas_ticket` (PK `(origen, correlativo)`, FK `cliente_id -> clientes(cliente_id)`) y
   `ventas_linea` (PK `(origen, correlativo, linea)`, FK compuesta `ON DELETE CASCADE`) son el
   modelo vigente. `codigo_interno` apunta lógicamente a `stock.isbn` o al catálogo de
   cafetería, sin FK.
 - Las líneas se reconstruyen con bitsets determinísticos: exactamente `cant_items` precios que
   suman `total_venta`. Sin combinación exacta, el ticket no se carga y va a cuarentena con la
-  regla `VENTAS-LINEA-001`. Los RUT se asignan con subset sum exacto; sin combinación, el
-  cliente queda sin asignación y se registra un `WARNING`.
+  regla `VENTAS-LINEA-001`. Los `cliente_id` se asignan con subset sum exacto; sin
+  combinación, el cliente queda sin asignación y se registra un `WARNING` sin exponer RUT.
 - `ventas.hora_simulada` es sintética: se deriva de un hash de
   `origen|correlativo|fecha`, no proviene del POS y es idempotente por ticket. Los
   domingos queda `NULL`.
-- `clientes.nombre`, `clientes.email` y `clientes.alta` admiten `NULL`. Un `"0"`
-  textual en nombre/email se guarda como `NULL`; una `Alta` futura también queda
-  `NULL` con warning y no rechaza la fila.
+- `clientes` persiste solo `cliente_id` (HMAC-SHA256 del RUT normalizado con `PII_HASH_KEY`),
+  `alta`, `canal`, `edad`, `puntos`, `compras` y `canjes`. RUT, nombre, email y cumpleaños se
+  validan en memoria y no se guardan. Un `"0"` textual en nombre/email no rechaza la fila; una
+  `Alta` futura queda `NULL` con warning. Cambiar `PII_HASH_KEY` cambia todos los `cliente_id`.
 - SQL files are read and executed whole; `{{schema}}` is substituted only after identifier
   validation. Use `psycopg.sql.Identifier` for identifiers, never f-strings.
 - `ventas --schema-only` aislado requiere `{{schema}}.clientes` creado antes por la FK de
-  `rut_cliente`; el runner ya ejecuta `clientes` primero.
+  `cliente_id`; el runner ya ejecuta `clientes` primero.
 - La migración `sql/migrations/20261105_split_ventas.sql` conserva la tabla plana como
   `{{schema}}.ventas_flat_backup` (renombrado idempotente, sin `DROP`).
 - All four pipelines are implemented: `clientes`, `stock`, `ventas` and `clima`.

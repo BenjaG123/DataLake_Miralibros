@@ -23,7 +23,13 @@ Miralibros en PostgreSQL, capa `silver`.
    ```text
    DATABASE_URL=postgresql://usuario:password@localhost:5432/nombre_db
    PG_SCHEMA=silver
+   PII_HASH_KEY=cambia-esta-clave-en-produccion
    ```
+
+   `PII_HASH_KEY` es la clave HMAC-SHA256 con la que `clientes.cliente_id` se deriva
+   del RUT normalizado. No se registra en logs ni se versiona. **Cambiarla cambia todos
+   los `cliente_id`** y desvincula los tickets ya cargados. Si falta en desarrollo se
+   usa `miralibros-dev-pii-key`, el mismo valor de `.env.example`.
 
 ## Datos de entrada
 
@@ -92,8 +98,8 @@ clima    -> silver.clima_diario
 stock/ventas (rechazos) -> silver.cuarentena
 ```
 
-`silver.ventas_ticket` tiene PK `(origen, correlativo)` y `rut_cliente` con FK a
-`silver.clientes(rut)`. `silver.ventas_linea` tiene PK `(origen, correlativo, linea)`, FK
+`silver.ventas_ticket` tiene PK `(origen, correlativo)` y `cliente_id` con FK a
+`silver.clientes(cliente_id)`. `silver.ventas_linea` tiene PK `(origen, correlativo, linea)`, FK
 compuesta a la cabecera con `ON DELETE CASCADE` e índices por ticket y por `codigo_interno`.
 No hay FK para `codigo_interno`: apunta lógicamente a `stock.isbn` (LIBRERIA) o al catálogo
 de cafetería (CAFETERIA).
@@ -141,14 +147,17 @@ Flags comunes:
 - Las líneas se reconstruyen con un multiset exacto de `cant_items` precios que suma
   `total_venta`; si no existe combinación, el ticket no se carga y queda en cuarentena con la
   regla `VENTAS-LINEA-001`.
-- Los RUT se asignan con subset sum exacto de montos. Un cliente sin combinación exacta queda
-  sin asignación y los tickets sobrantes quedan anónimos (`rut_cliente = NULL`).
+- Los `cliente_id` se asignan con subset sum exacto de montos. Un cliente sin combinación
+  exacta queda sin asignación y los tickets sobrantes quedan anónimos (`cliente_id = NULL`).
   `clientes.compras` es monto monetario histórico, no cantidad de transacciones.
-- `clientes.nombre`, `clientes.email` y `clientes.alta` admiten `NULL`; un `"0"`
-  textual en nombre/email y una fecha de alta futura se guardan como `NULL`.
+- `clientes` valida RUT, nombre, email y cumpleaños en memoria, pero solo persiste datos no
+  identificatorios: `cliente_id` (HMAC-SHA256 del RUT normalizado), `alta`, `canal`, `edad`,
+  `puntos`, `compras` y `canjes`. No se guardan RUT, nombre, email ni cumpleaños. Un `"0"`
+  textual en nombre/email no rechaza la fila; una Alta futura se guarda como `alta = NULL`
+  con warning. La `edad` se deriva del año de nacimiento estimado desde el RUT.
 
 `ventas --schema-only` ejecutado de forma aislada requiere que `silver.clientes` ya exista,
-porque `ventas_ticket.rut_cliente` tiene FK a `silver.clientes(rut)`. El runner
+porque `ventas_ticket.cliente_id` tiene FK a `silver.clientes(cliente_id)`. El runner
 `clientes -> stock -> ventas -> clima` garantiza ese orden.
 
 Las migraciones no destructivas viven en `sql/migrations/` y usan `{{schema}}`. La migración

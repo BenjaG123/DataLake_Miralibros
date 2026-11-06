@@ -172,6 +172,11 @@ MOTIVO_SIN_COMBINACION = "sin combinación exacta de líneas"
 MAX_ITERACIONES_SUBSET_SUM = 250_000
 MAX_SEGUNDOS_SUBSET_SUM = 2.0
 
+# Máximo de tickets por consulta de borrado de líneas. Cada ticket aporta dos
+# parámetros ``(origen, correlativo)``; 5.000 tickets = 10.000 parámetros, muy
+# por debajo del límite de PostgreSQL (65.535) sin perder eficiencia.
+LINE_DELETE_CHUNK_SIZE = 5_000
+
 
 class SubsetSumTimeout(RuntimeError):
     """La búsqueda de subconjunto superó el límite de iteraciones o tiempo.
@@ -1123,28 +1128,40 @@ def _delete_lines_for_batch(
     schema: str,
     tickets: Sequence[Ticket],
 ) -> int:
-    """Elimina las líneas existentes de los tickets del lote actual."""
+    """Elimina las líneas existentes de los tickets del lote actual.
+
+    Los tickets se procesan en chunks de ``LINE_DELETE_CHUNK_SIZE`` para no
+    superar el límite de parámetros de PostgreSQL. Se reutiliza un único cursor
+    y se acumula ``rowcount``; no se hace ``commit`` ni ``rollback`` aquí porque
+    la transacción la controla el llamador. Si un chunk falla, la excepción se
+    propaga para que la transacción externa revierta el lote completo.
+    """
     if not tickets:
         return 0
 
-    values = sql.SQL(", ").join(
-        sql.SQL("(%s, %s)") for _ in tickets
-    )
-    statement = sql.SQL(
-        "DELETE FROM {schema}.{line_table} "
-        "WHERE (origen, correlativo) IN (VALUES {values})"
-    ).format(
-        schema=sql.Identifier(schema),
-        line_table=sql.Identifier(LINE_TABLE),
-        values=values,
-    )
-    params: list[Any] = []
-    for ticket in tickets:
-        params.extend((ticket.origen, ticket.correlativo))
-
+    deleted = 0
     with conn.cursor() as cur:
-        cur.execute(statement, params)
-        return cur.rowcount
+        for start in range(0, len(tickets), LINE_DELETE_CHUNK_SIZE):
+            chunk = tickets[start : start + LINE_DELETE_CHUNK_SIZE]
+            values = sql.SQL(", ").join(
+                sql.SQL("(%s, %s)") for _ in chunk
+            )
+            statement = sql.SQL(
+                "DELETE FROM {schema}.{line_table} "
+                "WHERE (origen, correlativo) IN (VALUES {values})"
+            ).format(
+                schema=sql.Identifier(schema),
+                line_table=sql.Identifier(LINE_TABLE),
+                values=values,
+            )
+            params: list[Any] = []
+            for ticket in chunk:
+                params.extend((ticket.origen, ticket.correlativo))
+
+            cur.execute(statement, params)
+            deleted += cur.rowcount
+
+    return deleted
 
 
 def run(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import date
@@ -12,7 +14,13 @@ from typing import Any, cast
 import pandas as pd
 
 from etl import db
-from etl.config import BRONZE_DIR, SQL_DIR, configure_logging, get_schema
+from etl.config import (
+    BRONZE_DIR,
+    SQL_DIR,
+    configure_logging,
+    get_pii_hash_key,
+    get_schema,
+)
 from etl.readers import read_excel_as_str, require_columns
 from etl.validators import (
     is_placeholder,
@@ -43,28 +51,16 @@ SOURCE_COLUMNS = (
 )
 
 COLUMNS = (
-    "rut",
-    "nombre",
-    "email",
+    "cliente_id",
     "alta",
     "canal",
-    "cumple",
+    "edad",
     "puntos",
     "compras",
     "canjes",
 )
 
-Row = tuple[
-    str,
-    str | None,
-    str | None,
-    date | None,
-    str,
-    date,
-    int,
-    int,
-    int,
-]
+Row = tuple[str, date | None, str, int, int, int, int]
 
 CANAL_MAP = {
     "local": "Local",
@@ -88,6 +84,19 @@ EDAD_POR_TRAMO = (
 
 REFERENCE_YEAR = date.today().year
 MIN_ALTA_DATE = date(2000, 1, 1)
+
+
+def generar_cliente_id(rut: str) -> str:
+    """Genera un identificador anónimo determinístico a partir del RUT.
+
+    Usa HMAC-SHA256 con la clave configurada en ``PII_HASH_KEY``. El RUT nunca
+    se persiste ni se registra en logs.
+    """
+    return hmac.new(
+        get_pii_hash_key().encode("utf-8"),
+        rut.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def normalize_canal(value: Any) -> str | None:
@@ -128,36 +137,38 @@ def transform_row(
     *,
     reference_year: int = REFERENCE_YEAR,
 ) -> tuple[Row | None, str | None]:
-    """Transforma una fila; retorna (fila_normalizada, motivo_de_descarte)."""
+    """Transforma una fila; retorna (fila_normalizada, motivo_de_descarte).
+
+    Valida el RUT, nombre, email y cumpleaños para conservar las reglas de
+    calidad, pero la fila de salida solo contiene el ``cliente_id`` anónimo y
+    datos no identificatorios.
+    """
     errors: list[str] = []
 
     rut = normalize_rut(row["Rut cliente"])
-    if rut is None:
+    cliente_id = generar_cliente_id(rut) if rut is not None else None
+    if cliente_id is None:
         errors.append("RUT inválido")
 
-    nombre_crudo = str(row["Nombre"]).strip()
-    if nombre_crudo == "0":
-        nombre = None
-    else:
-        nombre = normalize_name(row["Nombre"])
-        if nombre is None:
-            errors.append("nombre inválido")
+    if (
+        str(row["Nombre"]).strip() != "0"
+        and normalize_name(row["Nombre"]) is None
+    ):
+        errors.append("nombre inválido")
 
-    email_crudo = str(row["Email"]).strip()
-    if email_crudo == "0":
-        email = None
-    else:
-        email = normalize_email(row["Email"])
-        if email is None:
-            errors.append("email inválido")
+    if (
+        str(row["Email"]).strip() != "0"
+        and normalize_email(row["Email"]) is None
+    ):
+        errors.append("email inválido")
 
     alta = parse_date_dmy(row["Alta"], min_date=MIN_ALTA_DATE)
     if alta is None:
         errors.append("alta inválida")
     elif alta.year > date.today().year:
         logger.warning(
-            "Alta futura para RUT %s: %s; se guarda alta=NULL",
-            rut or row["Rut cliente"],
+            "Alta futura para cliente_id %s: %s; se guarda alta=NULL",
+            cliente_id or "sin_id",
             alta,
         )
         alta = None
@@ -166,6 +177,7 @@ def transform_row(
     if canal is None:
         errors.append("canal inválido")
 
+    edad: int | None = None
     cumple: date | None = None
     day, month = parse_day_month_es(row["Cumple."])
     if day is None or month is None:
@@ -178,6 +190,10 @@ def transform_row(
             cumple = _build_cumple_date(year, month, day)
             if cumple is None:
                 errors.append("cumple inválido")
+            else:
+                edad = reference_year - cumple.year
+                if not 0 <= edad <= 120:
+                    errors.append("edad inválida")
 
     puntos = parse_non_negative_bigint_or_zero(row["Puntos"])
     if puntos is None:
@@ -193,10 +209,12 @@ def transform_row(
 
     if errors:
         return None, "; ".join(errors)
+    if cliente_id is None or canal is None or edad is None:
+        return None, "fila inválida"
 
     normalized_row = cast(
         Row,
-        (rut, nombre, email, alta, canal, cumple, puntos, compras, canjes),
+        (cliente_id, alta, canal, edad, puntos, compras, canjes),
     )
     return normalized_row, None
 
@@ -211,17 +229,19 @@ def transform(
     rejected: list[dict[str, Any]] = []
 
     for row in dataframe.to_dict(orient="records"):
+        rut = normalize_rut(row["Rut cliente"])
+        cliente_id = generar_cliente_id(rut) if rut is not None else None
         result, error = transform_row(row, reference_year=reference_year)
         if result is None:
             rejected.append(
                 {
-                    "rut": row["Rut cliente"],
+                    "cliente_id": cliente_id,
                     "motivo": error or "fila inválida",
                 }
             )
             logger.debug(
-                "Fila descartada RUT=%s: %s",
-                row["Rut cliente"],
+                "Fila descartada cliente_id=%s: %s",
+                cliente_id or "sin_id",
                 error or "fila inválida",
             )
             continue

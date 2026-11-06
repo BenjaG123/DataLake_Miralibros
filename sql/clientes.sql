@@ -1,24 +1,29 @@
--- Tabla final de clientes normalizados.
+-- Tabla final de clientes anonimizados.
 -- El pipeline crea la tabla si no existe y luego reemplaza su contenido.
+--
+-- No se persiste ningún dato identificatorio. ``cliente_id`` es un
+-- HMAC-SHA256 determinístico y ``edad`` se deriva del año de nacimiento
+-- estimado; ambos son datos no identificatorios.
 
 CREATE SCHEMA IF NOT EXISTS {{schema}};
 
 CREATE TABLE IF NOT EXISTS {{schema}}.clientes (
-    rut       VARCHAR(10)  PRIMARY KEY,
-    nombre    VARCHAR(150),
-    email     VARCHAR(254),
-    alta      DATE,
-    canal     VARCHAR(10)  NOT NULL,
-    cumple    DATE         NOT NULL,
-    puntos    BIGINT       DEFAULT 0 NOT NULL,
-    compras   BIGINT       DEFAULT 0 NOT NULL,
-    canjes    BIGINT       DEFAULT 0 NOT NULL,
+    cliente_id  VARCHAR(64) PRIMARY KEY,
+    alta        DATE,
+    canal       VARCHAR(10) NOT NULL,
+    edad        INTEGER     NOT NULL,
+    puntos      BIGINT      DEFAULT 0 NOT NULL,
+    compras     BIGINT      DEFAULT 0 NOT NULL,
+    canjes      BIGINT      DEFAULT 0 NOT NULL,
 
-    CONSTRAINT clientes_rut_formato
-        CHECK (rut ~ '^[0-9]{7,8}-[0-9K]$'),
+    CONSTRAINT clientes_cliente_id_formato
+        CHECK (cliente_id ~ '^[0-9a-f]{64}$'),
 
     CONSTRAINT clientes_canal_valido
         CHECK (canal IN ('Local', 'Web')),
+
+    CONSTRAINT clientes_edad_valida
+        CHECK (edad BETWEEN 0 AND 120),
 
     CONSTRAINT clientes_puntos_no_negativo
         CHECK (puntos >= 0),

@@ -15,6 +15,7 @@ SQL_DIR = BASE_DIR / "sql"
 ENV_FILE = BASE_DIR / ".env"
 
 DEFAULT_SCHEMA = "silver"
+DEFAULT_PII_HASH_KEY = "miralibros-dev-pii-key"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 load_dotenv(ENV_FILE)
@@ -40,6 +41,16 @@ def get_schema() -> str:
             "Usá solo letras, números y guión bajo."
         )
     return schema
+
+
+def get_pii_hash_key() -> str:
+    """Devuelve la clave HMAC para anonimizar PII.
+
+    Si ``PII_HASH_KEY`` falta o está vacía se usa el valor de desarrollo.
+    La clave nunca se registra en logs; cambiarla cambia todos los
+    ``cliente_id`` generados.
+    """
+    return (os.getenv("PII_HASH_KEY") or "").strip() or DEFAULT_PII_HASH_KEY
 
 
 def configure_logging(level: str = "INFO") -> None:

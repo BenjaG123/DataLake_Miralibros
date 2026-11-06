@@ -89,6 +89,37 @@ def _html_clima_con_decimales() -> str:
     )
 
 
+def _html_clima_con_valores_crudos() -> str:
+    """Tabla HTML con ceros, comas, ``s/p``, ``CALMA`` y una celda vacía."""
+    cabecera = (
+        "<thead><tr><th rowspan='2'>Dia</th>"
+        f"<th colspan='{len(MESES)}'>Meses</th></tr><tr>"
+        + "".join(f"<th>{mes}</th>" for mes in MESES)
+        + "</tr></thead>"
+    )
+    crudos = [
+        "007",
+        "0012",
+        "22,4",
+        "0,0",
+        "s/p",
+        "CALMA",
+        "",
+        *["15"] * (len(MESES) - 7),
+    ]
+    filas = "<tr><td>1</td>" + "".join(
+        f"<td>{valor}</td>" for valor in crudos
+    ) + "</tr>"
+    celda_resto = "<td>15</td>" * len(MESES)
+    filas += "".join(
+        f"<tr><td>{dia}</td>{celda_resto}</tr>" for dia in range(2, 32)
+    )
+    return (
+        "<html><body><table>"
+        f"{cabecera}<tbody>{filas}</tbody></table></body></html>"
+    )
+
+
 class TestReadExcelAsStr:
     """XLSX leído siempre como texto, sin inferir tipos."""
 
@@ -198,6 +229,30 @@ class TestReadHtmlGridAsStr:
         assert grilla.loc[0, "Febrero"] == "0,0"
         assert grilla.loc[0, "Marzo"] == "-1,2"
         assert grilla.loc[0, "Abril"] == "15"
+        assert {str(dtype) for dtype in grilla.dtypes} == {"str"}
+        assert all(
+            isinstance(valor, str) for valor in grilla.to_numpy().ravel()
+        )
+
+    def test_conserva_texto_crudo_sin_inferencia(
+        self, tmp_path: Path
+    ) -> None:
+        ruta = tmp_path / "clima_crudo.xls"
+        ruta.write_text(_html_clima_con_valores_crudos(), encoding="utf-8")
+
+        grilla = read_html_grid_as_str(ruta)
+
+        assert grilla.iloc[0].tolist()[1:8] == [
+            "007",
+            "0012",
+            "22,4",
+            "0,0",
+            "s/p",
+            "CALMA",
+            "",
+        ]
+        assert grilla.loc[0, "Enero"] == "007"
+        assert grilla.loc[0, "Julio"] == ""
         assert {str(dtype) for dtype in grilla.dtypes} == {"str"}
         assert all(
             isinstance(valor, str) for valor in grilla.to_numpy().ravel()

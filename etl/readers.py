@@ -3,69 +3,104 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import pandas as pd
+from lxml import html as lxml_html
+
+from etl.validators.fechas import MONTHS
+
+_MONTH_NAMES = frozenset(MONTHS)
+
+
+def _cell_text(cell: Any) -> str:
+    """Extrae el texto exacto de una celda HTML, sin interpretar su tipo."""
+    return "".join(cell.itertext()).strip()
+
+
+def _month_header(rows: Sequence[Any]) -> tuple[int, list[str]] | None:
+    """Localiza la fila de meses y devuelve (índice, nombres de meses).
+
+    Los archivos reales usan dos cabeceras: una primera fila con ``Dia`` y
+    ``Meses`` (con ``colspan``) y una segunda con los 12 meses. También se
+    acepta el caso en que ``Dia`` ocupa ambas filas con ``rowspan``.
+    """
+    for index, row in enumerate(rows):
+        texts = [
+            _cell_text(cell) for cell in row.xpath("./th|./td")
+        ]
+        if (
+            len(texts) == 13
+            and texts[0].casefold() == "dia"
+            and all(texts[1:])
+        ):
+            return index, texts[1:]
+
+        if (
+            len(texts) == 12
+            and texts[0].casefold() != "dia"
+            and all(texts)
+            and all(text.casefold() in _MONTH_NAMES for text in texts)
+            and index > 0
+        ):
+            previous = [
+                _cell_text(cell)
+                for cell in rows[index - 1].xpath("./th|./td")
+            ]
+            if previous and previous[0].casefold() == "dia":
+                return index, texts
+
+    return None
 
 
 def read_html_grid_as_str(path: str | Path) -> pd.DataFrame:
     """Lee una grilla diaria (día x mes) desde un .xls que en realidad es HTML.
 
     Los archivos de clima descargados del sitio no son Excel binarios: son
-    tablas HTML con extensión .xls. Pandas consume las filas de cabecera
-    ``Dia``/``Meses`` como un ``MultiIndex``; acá se aplana para recuperar
-    los nombres de meses y se validan los 31 días.
+    tablas HTML con extensión ``.xls``. Se usa ``lxml.html`` directamente para
+    quedarse con el texto exacto de cada celda mediante ``itertext()``; así se
+    conservan los ceros a la izquierda (``"007"``), los decimales con coma
+    (``"22,4"``, ``"0,0"``), ``"s/p"``, ``"CALMA"`` y las celdas vacías sin
+    que pandas infiera tipos ni altere formatos.
 
-    ``pd.read_html`` usa ``thousands=","`` por defecto, de modo que celdas
-    como ``"22,4"`` o ``"0,0"`` se convierten en ``224`` y ``0`` antes del
-    ``astype(str)``. Para conservar el texto crudo y la magnitud original se
-    pasa ``thousands=None``: el separador decimal chileno queda intacto y no
-    se eliminan separadores de miles. El resultado mantiene el contrato de
-    31 filas, 13 columnas (``Dia`` + 12 meses) y todos los valores como
-    ``str``.
+    El resultado mantiene el contrato de 31 filas, 13 columnas (``Dia`` + 12
+    meses) y todos los valores como ``str``.
     """
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(f"No se encontró el archivo: {file_path}")
 
-    try:
-        tables = pd.read_html(
-            file_path,
-            match="Dia",
-            flavor="lxml",
-            header=None,
-            keep_default_na=False,
-            thousands=None,
+    document = lxml_html.parse(str(file_path))
+    tables = document.xpath("//table")
+    if not tables:
+        raise ValueError(
+            f"No se encontró la cabecera 'Dia' en {file_path}"
         )
-    except ValueError as exc:
-        if "No tables found" in str(exc):
-            raise ValueError(
-                f"No se encontró la cabecera 'Dia' en {file_path}"
-            ) from exc
-        raise
 
     for table in tables:
-        if table.shape[1] != 13 or not isinstance(table.columns, pd.MultiIndex):
+        rows = table.xpath(".//tr")
+        header = _month_header(rows)
+        if header is None:
             continue
 
-        table = table.astype("string").fillna("")
-        columns = [
-            str(value).strip()
-            for value in table.columns.get_level_values(-1)
-        ]
-        if columns[0].casefold() != "dia" or not all(columns[1:]):
-            continue
+        header_index, months = header
+        data_rows: list[list[str]] = []
+        for row in rows[header_index + 1:]:
+            cells = row.xpath("./th|./td")
+            if len(cells) != 13:
+                continue
+            data_rows.append([_cell_text(cell) for cell in cells])
+            if len(data_rows) == 31:
+                break
 
-        data = table.iloc[:31].copy()
-        data.columns = ["Dia", *columns[1:]]
-
-        days = data.iloc[:, 0].astype(str).str.strip().tolist()
+        days = [fila[0].strip() for fila in data_rows]
         if days != [str(day) for day in range(1, 32)]:
             raise ValueError(
                 f"Se esperaban los días 1 a 31 en {file_path}, "
                 f"se encontraron: {days}"
             )
 
+        data = pd.DataFrame(data_rows, columns=["Dia", *months])
         return data.astype(str).reset_index(drop=True)
 
     raise ValueError(

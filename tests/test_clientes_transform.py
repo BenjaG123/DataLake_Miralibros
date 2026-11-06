@@ -7,6 +7,7 @@ y no se conecta a PostgreSQL.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from datetime import date
 from typing import Any
@@ -15,7 +16,6 @@ import pandas as pd
 import pytest
 
 from etl.pipelines.clientes import COLUMNS, transform, transform_row
-from etl.validators import validate_rut_dv
 
 TOTAL_FILAS = 150
 VALIDAS_ESPERADAS = 127
@@ -30,6 +30,19 @@ MOTIVOS_ESPERADOS = Counter(
         "nombre inválido": 2,
     }
 )
+
+COLUMNS_ESPERADAS = (
+    "cliente_id",
+    "alta",
+    "canal",
+    "edad",
+    "puntos",
+    "compras",
+    "canjes",
+)
+
+PATRON_CLIENTE_ID = re.compile(r"^[0-9a-f]{64}$")
+PATRON_RUT_CRUDO = re.compile(r"\d{7,8}-[\dkK]")
 
 
 def _fila_valida() -> dict[str, Any]:
@@ -82,19 +95,16 @@ class TestTransformLote:
 
         assert filas
         for fila in filas:
-            assert len(fila) == len(COLUMNS)
+            assert len(fila) == len(COLUMNS) == 7
 
-            rut, nombre, email, alta, canal, cumple, *contadores = fila
-            cuerpo, dv = rut.split("-")
-            assert validate_rut_dv(cuerpo, dv), f"RUT con DV incorrecto: {rut}"
-            # El contrato permite NULL cuando el crudo trae "0" o un Alta
-            # futura; el lote normal no debería ejercitar esos casos.
-            assert nombre is None or nombre
-            assert email is None or email
+            cliente_id, alta, canal, edad, *contadores = fila
+            assert PATRON_CLIENTE_ID.fullmatch(cliente_id)
+            # El contrato permite NULL cuando una Alta futura se anula.
             assert alta is None or isinstance(alta, date)
             assert canal in ("Local", "Web")
-            assert isinstance(cumple, date)
-            assert 1900 <= cumple.year <= date.today().year
+            assert isinstance(edad, int)
+            assert not isinstance(edad, bool)
+            assert 0 <= edad <= 120
 
             assert len(contadores) == 3
             for contador in contadores:
@@ -102,13 +112,25 @@ class TestTransformLote:
                 assert not isinstance(contador, bool)
                 assert contador >= 0
 
+            # La fila normalizada no debe contener RUT ni datos de identidad.
+            assert not any(
+                isinstance(valor, str)
+                and PATRON_RUT_CRUDO.fullmatch(valor)
+                for valor in fila
+            )
+
+    def test_columnas_no_incluyen_datos_identificatorios(self) -> None:
+        assert COLUMNS == COLUMNS_ESPERADAS
+        for prohibida in ("rut", "nombre", "email", "cumple"):
+            assert prohibida not in COLUMNS
+
     def test_ninguna_fila_valida_tiene_contadores_nulos(
         self, clientes_df: pd.DataFrame
     ) -> None:
         filas, _ = transform(clientes_df)
 
         for fila in filas:
-            assert all(contador is not None for contador in fila[6:9])
+            assert all(contador is not None for contador in fila[4:7])
 
 
 class TestTransformFila:
@@ -125,7 +147,7 @@ class TestTransformFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[6] == 0
+        assert resultado[4] == 0
 
     def test_puntos_no_numerico_descarta_con_motivo(self) -> None:
         fila = _fila_valida()
@@ -145,10 +167,11 @@ class TestTransformFila:
         assert motivo is None
         assert "cumple inválido" not in (motivo or "")
         assert resultado is not None
-        assert resultado[5].month == 6
-        assert resultado[5].day == 14
+        # La edad deriva del año estimado por RUT, no del texto del cumpleaños.
+        assert isinstance(resultado[3], int)
+        assert resultado[3] == 68
 
-    def test_nombre_cero_textual_queda_none_sin_rechazo(self) -> None:
+    def test_nombre_cero_textual_no_descarta_y_genera_cliente_id(self) -> None:
         fila = _fila_valida()
         fila["Nombre"] = "0"
 
@@ -156,9 +179,9 @@ class TestTransformFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[1] is None
+        assert PATRON_CLIENTE_ID.fullmatch(resultado[0])
 
-    def test_email_cero_textual_queda_none_sin_rechazo(self) -> None:
+    def test_email_cero_textual_no_descarta_y_genera_cliente_id(self) -> None:
         fila = _fila_valida()
         fila["Email"] = "0"
 
@@ -166,9 +189,9 @@ class TestTransformFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[2] is None
+        assert PATRON_CLIENTE_ID.fullmatch(resultado[0])
 
-    def test_alta_futura_queda_none_y_advierte(
+    def test_alta_futura_queda_none_y_advierte_sin_rut_crudo(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         fila = _fila_valida()
@@ -179,5 +202,7 @@ class TestTransformFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[3] is None
+        assert resultado[1] is None
         assert "Alta futura" in caplog.text
+        assert resultado[0] in caplog.text
+        assert "12345678-5" not in caplog.text

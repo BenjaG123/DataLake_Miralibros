@@ -50,7 +50,7 @@ TIPOS_VENTAS_TICKET = {
     "correlativo": "BIGINT",
     "fecha": "DATE",
     "hora_simulada": "TIME",
-    "rut_cliente": "VARCHAR(10)",
+    "cliente_id": "VARCHAR(64)",
     "medio_pago": "TEXT",
     "tipo_documento": "TEXT",
     "folio": "TEXT",
@@ -180,6 +180,15 @@ class TestClaves:
         cuerpo = _cuerpo_create_table(DDL_VENTAS, "ventas_linea")
         assert re.search(
             r"PRIMARY KEY\s*\(\s*origen\s*,\s*correlativo\s*,\s*linea\s*\)",
+            cuerpo,
+        )
+
+    def test_ventas_ticket_fk_apunta_a_clientes_por_cliente_id(self) -> None:
+        cuerpo = _cuerpo_create_table(DDL_VENTAS, "ventas_ticket")
+        assert re.search(
+            r"FOREIGN KEY\s*\(\s*cliente_id\s*\)\s*"
+            r"REFERENCES\s+\{\{schema\}\}\.clientes\s*"
+            r"\(\s*cliente_id\s*\)",
             cuerpo,
         )
 

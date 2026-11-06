@@ -162,19 +162,19 @@ def test_compras_son_montos_y_cuadran_con_tickets(
     }
     sumas: dict[str, int] = defaultdict(int)
     conteos: dict[str, int] = defaultdict(int)
-    for clave, rut in assignments.items():
-        sumas[rut] += ticket_por_clave[clave].total_venta
-        conteos[rut] += 1
+    for clave, cliente_id in assignments.items():
+        sumas[cliente_id] += ticket_por_clave[clave].total_venta
+        conteos[cliente_id] += 1
 
     positivos = [client for client in clients if client.compras > 0]
     assert len(positivos) == 21
     assert sum(client.compras for client in positivos) > 100_000
     for client in positivos:
         assert client.alta is not None
-        assert sumas[client.rut] == client.compras
-        assert conteos[client.rut] >= 1
-        for clave, rut in assignments.items():
-            if rut == client.rut:
+        assert sumas[client.cliente_id] == client.compras
+        assert conteos[client.cliente_id] >= 1
+        for clave, cliente_id in assignments.items():
+            if cliente_id == client.cliente_id:
                 assert ticket_por_clave[clave].fecha >= client.alta
 
     assert any(conteo >= 2 for conteo in conteos.values())

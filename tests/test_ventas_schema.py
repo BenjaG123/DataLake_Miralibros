@@ -19,7 +19,7 @@ TIPOS_TICKET = {
     "correlativo": "BIGINT",
     "fecha": "DATE",
     "hora_simulada": "TIME",
-    "rut_cliente": "VARCHAR(10)",
+    "cliente_id": "VARCHAR(64)",
     "medio_pago": "TEXT",
     "tipo_documento": "TEXT",
     "folio": "TEXT",
@@ -130,11 +130,11 @@ def test_clave_primaria_de_linea() -> None:
     )
 
 
-def test_fk_de_rut_cliente() -> None:
+def test_fk_de_cliente_id() -> None:
     cuerpo = _cuerpo_create_table("ventas_ticket")
     assert re.search(
-        r"FOREIGN KEY\s*\(\s*rut_cliente\s*\)\s*"
-        r"REFERENCES\s+\{\{schema\}\}\.clientes\s*\(\s*rut\s*\)",
+        r"FOREIGN KEY\s*\(\s*cliente_id\s*\)\s*"
+        r"REFERENCES\s+\{\{schema\}\}\.clientes\s*\(\s*cliente_id\s*\)",
         cuerpo,
     )
 
@@ -193,8 +193,8 @@ def test_checks_de_linea(patron: str) -> None:
     [
         r"CREATE INDEX IF NOT EXISTS\s+ventas_ticket_fecha_idx\s+"
         r"ON\s+\{\{schema\}\}\.ventas_ticket\s*\(fecha\)",
-        r"CREATE INDEX IF NOT EXISTS\s+ventas_ticket_rut_cliente_idx\s+"
-        r"ON\s+\{\{schema\}\}\.ventas_ticket\s*\(rut_cliente\)",
+        r"CREATE INDEX IF NOT EXISTS\s+ventas_ticket_cliente_id_idx\s+"
+        r"ON\s+\{\{schema\}\}\.ventas_ticket\s*\(cliente_id\)",
         r"CREATE INDEX IF NOT EXISTS\s+ventas_ticket_origen_fecha_idx\s+"
         r"ON\s+\{\{schema\}\}\.ventas_ticket\s*\(origen,\s*fecha\)",
         r"CREATE INDEX IF NOT EXISTS\s+ventas_linea_ticket_idx\s+"

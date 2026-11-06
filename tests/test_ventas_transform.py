@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -16,9 +17,11 @@ from etl.pipelines.ventas import (
     TICKET_COLUMNS,
     Client,
     PriceCatalog,
+    SubsetSumTimeout,
     Ticket,
     _leer_ventas,
     _line_rejection,
+    _subset_sum_indices,
     assign_clients,
     build_lines,
     compute_reachable,
@@ -38,6 +41,18 @@ from etl.pipelines.ventas import (
 LOADED_AT = datetime(2025, 1, 1, tzinfo=timezone.utc)
 SOURCE_FILE = "VENTAS LIBRERIA.xlsx"
 REGLA_LINEA = "VENTAS-LINEA-001"
+RUT_CRUDO = "12345678-5"
+PATRON_CLIENTE_ID = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _cliente_id(caracter: str = "a") -> str:
+    """Genera un ``cliente_id`` sintético con el formato del HMAC-SHA256."""
+    return caracter * 64
+
+
+def _es_cliente_id(valor: str) -> bool:
+    """Indica si el valor cumple el formato de ``cliente_id``."""
+    return PATRON_CLIENTE_ID.fullmatch(valor) is not None
 
 
 def _fila_valida() -> dict[str, object]:
@@ -190,8 +205,9 @@ class TestTransformRow:
     def test_to_db_row_respeta_el_orden_de_columnas(self) -> None:
         ticket, _ = _transformar({})
         assert ticket is not None
+        cliente_id = _cliente_id("a")
 
-        fila = ticket.to_db_row("12345678-5")
+        fila = ticket.to_db_row(cliente_id)
 
         assert len(fila) == len(TICKET_COLUMNS)
         assert fila[:5] == (
@@ -199,7 +215,7 @@ class TestTransformRow:
             1,
             date(2025, 1, 2),
             ticket.hora_simulada,
-            "12345678-5",
+            cliente_id,
         )
         assert fila[-2:] == (LOADED_AT, LOADED_AT)
 
@@ -790,40 +806,64 @@ class TestBuildLines:
         assert rechazo["detalles"][0]["regla"] == REGLA_LINEA
 
 
+class TestSubsetSumIterativo:
+    """Límites del DFS iterativo y su timeout controlado."""
+
+    def test_veinte_mil_valores_no_desborda_la_pila(self) -> None:
+        seleccionados = _subset_sum_indices([1] * 20_001, 20_000)
+
+        assert seleccionados is not None
+        assert len(seleccionados) == 20_000
+        assert len(set(seleccionados)) == 20_000
+
+    @pytest.mark.parametrize(
+        "limites",
+        [
+            {"max_iteraciones": 1},
+            {"max_segundos": 0.0},
+        ],
+    )
+    def test_timeout_controlado(self, limites: dict[str, float]) -> None:
+        with pytest.raises(SubsetSumTimeout):
+            _subset_sum_indices([1, 1], 2, **limites)
+
+
 class TestAssignClients:
-    """Asignación de RUT por subset sum exacto."""
+    """Asignación de ``cliente_id`` por subset sum exacto."""
 
     def _clientes(
         self,
         *definiciones: tuple[str, date | None, int],
     ) -> list[Client]:
         return [
-            Client(rut=rut, alta=alta, compras=compras)
-            for rut, alta, compras in definiciones
+            Client(cliente_id=cliente_id, alta=alta, compras=compras)
+            for cliente_id, alta, compras in definiciones
         ]
 
     def test_asigna_subconjunto_exacto(self) -> None:
+        id_cliente = _cliente_id("1")
         tickets = [
             _ticket(correlativo=1, total=1000),
             _ticket(correlativo=2, total=2000),
         ]
         clients = self._clientes(
-            ("11111111-1", date(2024, 1, 1), 3000),
+            (id_cliente, date(2024, 1, 1), 3000),
         )
 
         assignments = assign_clients(tickets, clients)
 
         assert set(assignments) == {("LIBRERIA", 1), ("LIBRERIA", 2)}
-        assert assignments[("LIBRERIA", 1)] == "11111111-1"
+        assert assignments[("LIBRERIA", 1)] == id_cliente
 
     def test_asigna_cliente_con_dos_tickets(self) -> None:
+        id_cliente = _cliente_id("2")
         tickets = [
             _ticket(correlativo=1, total=5000),
             _ticket(correlativo=2, total=3000),
             _ticket(correlativo=3, total=1000),
         ]
         clients = self._clientes(
-            ("22222222-2", date(2024, 1, 1), 8000),
+            (id_cliente, date(2024, 1, 1), 8000),
         )
 
         assignments = assign_clients(tickets, clients)
@@ -832,6 +872,7 @@ class TestAssignClients:
         assert set(assignments) == {("LIBRERIA", 1), ("LIBRERIA", 2)}
 
     def test_restriccion_temporal(self) -> None:
+        id_cliente = _cliente_id("3")
         tickets = [
             _ticket(
                 correlativo=1,
@@ -845,33 +886,35 @@ class TestAssignClients:
             ),
         ]
         clients = self._clientes(
-            ("33333333-3", date(2024, 1, 1), 2000),
+            (id_cliente, date(2024, 1, 1), 2000),
         )
 
         assignments = assign_clients(tickets, clients)
 
-        assert assignments == {("LIBRERIA", 2): "33333333-3"}
+        assert assignments == {("LIBRERIA", 2): id_cliente}
 
     def test_deja_tickets_anonimos(self) -> None:
+        id_cliente = _cliente_id("4")
         tickets = [
             _ticket(correlativo=1, total=1000),
             _ticket(correlativo=2, total=2000),
         ]
         clients = self._clientes(
-            ("44444444-4", date(2024, 1, 1), 1000),
+            (id_cliente, date(2024, 1, 1), 1000),
         )
 
         assignments = assign_clients(tickets, clients)
 
-        assert assignments == {("LIBRERIA", 1): "44444444-4"}
+        assert assignments == {("LIBRERIA", 1): id_cliente}
         assert ("LIBRERIA", 2) not in assignments
 
-    def test_cliente_sin_subconjunto_advierte(
+    def test_cliente_sin_subconjunto_advierte_sin_rut(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        id_cliente = _cliente_id("5")
         tickets = [_ticket(correlativo=1, total=1000)]
         clients = self._clientes(
-            ("55555555-5", date(2024, 1, 1), 500),
+            (id_cliente, date(2024, 1, 1), 500),
         )
 
         with caplog.at_level(logging.WARNING):
@@ -879,48 +922,81 @@ class TestAssignClients:
 
         assert assignments == {}
         assert "Sin subconjunto exacto" in caplog.text
+        assert id_cliente in caplog.text
+        assert RUT_CRUDO not in caplog.text
 
-    def test_no_reutiliza_un_ticket(self) -> None:
+    def test_timeout_deja_sin_asignar_y_advierte_sin_rut(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        id_cliente = _cliente_id("b")
         tickets = [_ticket(correlativo=1, total=1000)]
         clients = self._clientes(
-            ("66666666-6", date(2024, 1, 1), 1000),
-            ("77777777-7", date(2024, 1, 1), 1000),
+            (id_cliente, date(2024, 1, 1), 1000),
+        )
+
+        def timeout(*args: object, **kwargs: object) -> object:
+            raise SubsetSumTimeout("límite de prueba")
+
+        monkeypatch.setattr(ventas, "_subset_sum_indices", timeout)
+
+        with caplog.at_level(logging.WARNING):
+            assignments = assign_clients(tickets, clients)
+
+        assert assignments == {}
+        assert "interrumpido por límite" in caplog.text
+        assert id_cliente in caplog.text
+        assert RUT_CRUDO not in caplog.text
+
+    def test_no_reutiliza_un_ticket(self) -> None:
+        primero = _cliente_id("6")
+        segundo = _cliente_id("7")
+        tickets = [_ticket(correlativo=1, total=1000)]
+        clients = self._clientes(
+            (primero, date(2024, 1, 1), 1000),
+            (segundo, date(2024, 1, 1), 1000),
         )
 
         assignments = assign_clients(tickets, clients)
 
         assert len(assignments) == 1
-        assert assignments[("LIBRERIA", 1)] == "66666666-6"
+        assert assignments[("LIBRERIA", 1)] == primero
 
     def test_cliente_sin_alta_no_se_asigna(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        id_cliente = _cliente_id("8")
         tickets = [_ticket(correlativo=1, total=1000)]
-        clients = self._clientes(("88888888-8", None, 1000))
+        clients = self._clientes((id_cliente, None, 1000))
 
         with caplog.at_level(logging.WARNING):
             assignments = assign_clients(tickets, clients)
 
         assert assignments == {}
         assert "sin alta válida" in caplog.text
+        assert id_cliente in caplog.text
 
     def test_cliente_compras_cero_no_se_asigna(self) -> None:
+        id_cliente = _cliente_id("9")
         tickets = [_ticket(correlativo=1, total=1000)]
         clients = self._clientes(
-            ("99999999-9", date(2024, 1, 1), 0),
+            (id_cliente, date(2024, 1, 1), 0),
         )
 
         assert assign_clients(tickets, clients) == {}
 
     def test_es_deterministica(self) -> None:
+        primero = _cliente_id("1")
+        segundo = _cliente_id("2")
         tickets = [
             _ticket(correlativo=1, total=3000),
             _ticket(correlativo=2, total=2000),
             _ticket(correlativo=3, total=1000),
         ]
         clients = self._clientes(
-            ("10101010-1", date(2024, 1, 1), 3000),
-            ("20202020-2", date(2024, 1, 1), 2000),
+            (primero, date(2024, 1, 1), 3000),
+            (segundo, date(2024, 1, 1), 2000),
         )
 
         primera = assign_clients(tickets, clients)
@@ -930,7 +1006,7 @@ class TestAssignClients:
 
 
 class TestLoadClientes:
-    """Clientes en memoria con compras monetarias."""
+    """Clientes en memoria con compras monetarias y ``cliente_id`` anónimo."""
 
     def test_carga_clientes_unicos(
         self, archivos_fixtures: dict[str, Path]
@@ -938,8 +1014,10 @@ class TestLoadClientes:
         clients = load_clientes(archivos_fixtures["clientes"])
 
         assert len(clients) == 127
-        assert len({client.rut for client in clients}) == len(clients)
-
+        assert len({client.cliente_id for client in clients}) == len(clients)
+        assert all(
+            _es_cliente_id(client.cliente_id) for client in clients
+        )
 
     def test_compras_son_montos_no_cantidades(
         self, archivos_fixtures: dict[str, Path]

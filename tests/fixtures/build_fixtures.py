@@ -1055,7 +1055,11 @@ def _parse_alta_generada(valor: Any) -> date:
 def _clientes_validos(
     clientes: pd.DataFrame,
 ) -> list[tuple[int, str, date]]:
-    """Devuelve ``(indice, rut, alta)`` de clientes válidos y asignables."""
+    """Devuelve ``(indice, cliente_id, alta)`` de clientes válidos y asignables.
+
+    ``cliente_id`` es el HMAC-SHA256 que genera el pipeline; el RUT crudo no
+    se usa para asignar compras ni se escribe en ningún artefacto derivado.
+    """
     validos: list[tuple[int, str, date]] = []
     texto = _como_texto(clientes)
     for indice, row in enumerate(texto.to_dict(orient="records")):
@@ -1068,10 +1072,10 @@ def _clientes_validos(
         if indice in CLIENTES_NUMERICO_NULO:
             # Se conserva el caso nulo reservado: el pipeline lo trata como 0.
             continue
-        rut, alta = normalizado[0], normalizado[3]
-        if rut is None or alta is None:
+        cliente_id, alta = normalizado[0], normalizado[1]
+        if cliente_id is None or alta is None:
             continue
-        validos.append((indice, rut, alta))
+        validos.append((indice, cliente_id, alta))
     return validos
 
 
@@ -1123,7 +1127,7 @@ def _asignar_compras(
 
     asignados = {cliente_doble[0]}
     clientes.at[cliente_doble[0], "Compras"] = total_doble
-    for (indice, _rut, _alta), total in zip(
+    for (indice, _cliente_id, _alta), total in zip(
         validos[1 : CLIENTES_CON_COMPRAS],
         objetivos,
         strict=True,
@@ -1133,7 +1137,7 @@ def _asignar_compras(
 
     # Todo cliente válido no asignado queda con compras 0; los casos nulos
     # reservados se conservan para que el pipeline los interprete como 0.
-    for indice, _rut, _alta in validos:
+    for indice, _cliente_id, _alta in validos:
         if indice not in asignados:
             clientes.at[indice, "Compras"] = 0
 
@@ -1308,9 +1312,9 @@ def _verificar_invariantes(
 
     clients = [
         ventas_pipeline.Client(
-            rut=fila[0],
-            alta=fila[3],
-            compras=fila[7],
+            cliente_id=fila[0],
+            alta=fila[1],
+            compras=fila[5],
         )
         for fila in filas_clientes
     ]
@@ -1320,10 +1324,10 @@ def _verificar_invariantes(
     }
     sumas: dict[str, int] = defaultdict(int)
     conteos: dict[str, int] = defaultdict(int)
-    for clave, rut in assignments.items():
+    for clave, cliente_id in assignments.items():
         ticket = ticket_por_clave[clave]
-        sumas[rut] += ticket.total_venta
-        conteos[rut] += 1
+        sumas[cliente_id] += ticket.total_venta
+        conteos[cliente_id] += 1
 
     positivos = [client for client in clients if client.compras > 0]
     assert len(positivos) == CLIENTES_CON_COMPRAS, (
@@ -1332,13 +1336,13 @@ def _verificar_invariantes(
     )
     for client in positivos:
         assert client.alta is not None
-        assert sumas[client.rut] == client.compras, (
-            f"RUT {client.rut}: compras={client.compras} y tickets "
-            f"asignados={sumas[client.rut]}"
+        assert sumas[client.cliente_id] == client.compras, (
+            f"cliente_id {client.cliente_id}: compras={client.compras} y "
+            f"tickets asignados={sumas[client.cliente_id]}"
         )
-        assert conteos[client.rut] >= 1
-        for clave, rut in assignments.items():
-            if rut == client.rut:
+        assert conteos[client.cliente_id] >= 1
+        for clave, cliente_id in assignments.items():
+            if cliente_id == client.cliente_id:
                 assert ticket_por_clave[clave].fecha >= client.alta
 
     assert any(conteo >= 2 for conteo in conteos.values()), (

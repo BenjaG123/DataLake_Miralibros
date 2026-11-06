@@ -1,7 +1,8 @@
 """Contrato de esquema de clientes sin conectarse a PostgreSQL.
 
 El DDL se lee y se parsea como texto: se comparan columnas, tipos, PK y CHECK
-contra lo que produce el pipeline (``COLUMNS`` y ``Row``).
+contra lo que produce el pipeline (``COLUMNS`` y ``Row``). La tabla solo debe
+contener el ``cliente_id`` anonimizado y datos no identificatorios.
 """
 
 from __future__ import annotations
@@ -19,16 +20,16 @@ DDL_PATH = RAIZ / "sql" / "clientes.sql"
 DDL = DDL_PATH.read_text(encoding="utf-8")
 
 TIPOS_ESPERADOS = {
-    "rut": "VARCHAR(10)",
-    "nombre": "VARCHAR(150)",
-    "email": "VARCHAR(254)",
+    "cliente_id": "VARCHAR(64)",
     "alta": "DATE",
     "canal": "VARCHAR(10)",
-    "cumple": "DATE",
+    "edad": "INTEGER",
     "puntos": "BIGINT",
     "compras": "BIGINT",
     "canjes": "BIGINT",
 }
+
+COLUMNAS_PROHIBIDAS = ("rut", "nombre", "email", "cumple")
 
 
 def _cuerpo_create_table() -> str:
@@ -62,34 +63,47 @@ def _columnas_ddl() -> dict[str, str]:
     return columnas
 
 
-def test_ddl_define_las_nueve_columnas_en_orden() -> None:
+def test_ddl_define_las_siete_columnas_en_orden() -> None:
     assert list(_columnas_ddl()) == list(COLUMNS)
-    assert len(COLUMNS) == 9
+    assert len(COLUMNS) == 7
 
 
 def test_ddl_tipos_coinciden_con_el_contrato() -> None:
     assert _columnas_ddl() == TIPOS_ESPERADOS
 
 
-def test_rut_es_primary_key() -> None:
+def test_cliente_id_es_primary_key() -> None:
     cuerpo = _cuerpo_create_table()
-    assert re.search(r"\brut\s+VARCHAR\(10\)\s+PRIMARY KEY\b", cuerpo)
-
-
-@pytest.mark.parametrize("columna", ["nombre", "email", "alta"])
-def test_columnas_opcionales_no_tienen_not_null(columna: str) -> None:
-    cuerpo = _cuerpo_create_table()
-    coincidencia = re.search(
-        rf"^\s*{columna}\s+[^\n,]+", cuerpo, re.MULTILINE
+    assert re.search(
+        r"\bcliente_id\s+VARCHAR\(64\)\s+PRIMARY KEY\b",
+        cuerpo,
     )
-    assert coincidencia is not None, f"no se encontró la columna {columna}"
+
+
+def test_alta_admite_null() -> None:
+    cuerpo = _cuerpo_create_table()
+    coincidencia = re.search(r"^\s*alta\s+[^\n,]+", cuerpo, re.MULTILINE)
+    assert coincidencia is not None, "no se encontró la columna alta"
     assert "NOT NULL" not in coincidencia.group(0).upper()
+
+
+@pytest.mark.parametrize("columna", COLUMNAS_PROHIBIDAS)
+def test_ddl_no_persiste_datos_identificatorios(columna: str) -> None:
+    columnas = _columnas_ddl()
+    assert columna not in columnas, (
+        f"{columna} no debe persistirse en silver.clientes"
+    )
+    assert re.search(rf"\b{columna}\b", DDL, re.IGNORECASE) is None, (
+        f"sql/clientes.sql todavía menciona {columna!r}"
+    )
 
 
 @pytest.mark.parametrize(
     "patron",
     [
+        r"cliente_id\s*~\s*'\^\[0-9a-f\]\{64\}\$'",
         r"canal\s+IN\s*\(\s*'Local'\s*,\s*'Web'\s*\)",
+        r"edad\s+BETWEEN\s+0\s+AND\s+120",
         r"puntos\s*>=\s*0",
         r"compras\s*>=\s*0",
         r"canjes\s*>=\s*0",

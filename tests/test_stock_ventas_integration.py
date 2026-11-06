@@ -6,7 +6,7 @@ carga dos veces los crudos sintéticos y lo elimina con ``DROP SCHEMA CASCADE``
 en el ``finally``. El schema de prueba nunca se toma de ``PG_SCHEMA``.
 
 La carga de ventas replica el pipeline: clientes primero por la FK de
-``ventas_ticket.rut_cliente``, luego cabeceras y líneas exactas.
+``ventas_ticket.cliente_id``, luego cabeceras y líneas exactas.
 """
 
 from __future__ import annotations
@@ -385,11 +385,11 @@ def _compras_incorrectas(
     schema: str,
 ) -> list[tuple[Any, ...]]:
     consulta = sql.SQL(
-        "SELECT c.rut, c.compras, COALESCE(SUM(t.total_venta), 0) "
+        "SELECT c.cliente_id, c.compras, COALESCE(SUM(t.total_venta), 0) "
         "FROM {clientes} AS c "
-        "LEFT JOIN {tickets} AS t ON t.rut_cliente = c.rut "
+        "LEFT JOIN {tickets} AS t ON t.cliente_id = c.cliente_id "
         "WHERE c.compras > 0 "
-        "GROUP BY c.rut, c.compras "
+        "GROUP BY c.cliente_id, c.compras "
         "HAVING COALESCE(SUM(t.total_venta), 0) <> c.compras"
     ).format(
         clientes=sql.Identifier(schema, "clientes"),
@@ -437,7 +437,7 @@ def _tickets_fuera_de_alta(conn: db.Connection, schema: str) -> int:
     consulta = sql.SQL(
         "SELECT count(*) "
         "FROM {tickets} AS t "
-        "JOIN {clientes} AS c ON c.rut = t.rut_cliente "
+        "JOIN {clientes} AS c ON c.cliente_id = t.cliente_id "
         "WHERE c.alta IS NOT NULL AND t.fecha < c.alta"
     ).format(
         tickets=sql.Identifier(schema, "ventas_ticket"),
@@ -448,7 +448,7 @@ def _tickets_fuera_de_alta(conn: db.Connection, schema: str) -> int:
 
 def _contar_anonimos(conn: db.Connection, schema: str) -> int:
     consulta = sql.SQL(
-        "SELECT count(*) FROM {} WHERE rut_cliente IS NULL"
+        "SELECT count(*) FROM {} WHERE cliente_id IS NULL"
     ).format(sql.Identifier(schema, "ventas_ticket"))
     return int(_escalar(conn, consulta))
 
@@ -636,12 +636,12 @@ class TestVentasIntegracion:
         assert _tickets_fuera_de_alta(conn, schema) == 0
         assert _contar_anonimos(conn, schema) > 0
 
-        con_rut = sql.SQL(
-            "SELECT count(*) FROM {} WHERE rut_cliente IS NOT NULL"
+        con_cliente = sql.SQL(
+            "SELECT count(*) FROM {} WHERE cliente_id IS NOT NULL"
         ).format(sql.Identifier(schema, "ventas_ticket"))
-        assert int(_escalar(conn, con_rut)) == 22
+        assert int(_escalar(conn, con_cliente)) == 22
 
-    def test_fk_de_rut_y_cascada_de_lineas(
+    def test_fk_de_cliente_id_y_cascada_de_lineas(
         self,
         esquema_prueba: tuple[str, db.Connection],
         archivos_raw: dict[str, Path],
@@ -661,8 +661,8 @@ class TestVentasIntegracion:
         fk_linea = _definiciones_fk(conn, schema, "ventas_linea")
 
         assert any(
-            "FOREIGN KEY (rut_cliente)" in definicion
-            and "clientes(rut)" in definicion
+            "FOREIGN KEY (cliente_id)" in definicion
+            and "clientes(cliente_id)" in definicion
             for _, definicion in fk_ticket
         )
         assert any(

@@ -26,6 +26,11 @@ from psycopg import sql
 
 from etl import db
 from etl.config import BRONZE_DIR, SQL_DIR, configure_logging, get_schema
+from etl.quarantine import (
+    QUARANTINE_SQL,
+    flatten_rejections,
+    insert_quarantine,
+)
 from etl.readers import read_excel_as_str, require_columns
 from etl.validators import (
     is_placeholder,
@@ -150,52 +155,117 @@ def _clean_text(value: Any) -> str | None:
     return " ".join(raw.split())
 
 
-def transform_row(
+def _detalle(
+    columna: str,
+    valor_crudo: Any,
+    regla: str,
+    motivo: str,
+) -> dict[str, Any]:
+    """Construye un detalle de rechazo para el resumen y la cuarentena."""
+    return {
+        "columna": columna,
+        "valor_crudo": None if valor_crudo is None else str(valor_crudo),
+        "regla": regla,
+        "severidad": "error",
+        "motivo": motivo,
+    }
+
+
+def _validate_row(
     row: Mapping[str, Any],
     *,
     source_file: str,
     loaded_at: datetime,
-) -> tuple[Row | None, str | None]:
-    """Transforma una fila de stock; retorna (fila_normalizada, motivo)."""
-    errors: list[str] = []
+) -> tuple[Row | None, list[dict[str, Any]]]:
+    """Valida una fila; retorna la fila normalizada o los detalles del rechazo."""
+    detalles: list[dict[str, Any]] = []
 
     isbn = normalize_isbn(row["ISBN"])
     if isbn is None:
-        errors.append("ISBN inválido o vacío")
-
-    titulo = _clean_text(row["Titulo"])
-    autor = _clean_text(row["Autor"])
-    editorial = _clean_text(row["Editorial"])
-    clasificacion = _clean_text(row["Clasificación"])
+        detalles.append(
+            _detalle(
+                "ISBN",
+                row["ISBN"],
+                "STOCK-VALIDACION",
+                "ISBN inválido o vacío",
+            )
+        )
 
     pvp = parse_non_negative_bigint(row["PVP"], default=None)
-    if pvp is None:
-        errors.append("PVP inválido o negativo")
+    if pvp is None or pvp < 100:
+        detalles.append(
+            _detalle(
+                "PVP",
+                row["PVP"],
+                "STOCK-PVP-001",
+                "PVP inválido o menor a 100",
+            )
+        )
 
     consignacion = parse_non_negative_bigint_or_zero(row["Stock Consig."])
     if consignacion is None:
-        errors.append("stock consignación inválido")
+        detalles.append(
+            _detalle(
+                "Stock Consig.",
+                row["Stock Consig."],
+                "STOCK-VALIDACION",
+                "stock consignación inválido",
+            )
+        )
 
     propio = parse_non_negative_bigint_or_zero(row["Stock Propio"])
     if propio is None:
-        errors.append("stock propio inválido")
+        detalles.append(
+            _detalle(
+                "Stock Propio",
+                row["Stock Propio"],
+                "STOCK-VALIDACION",
+                "stock propio inválido",
+            )
+        )
 
     total = parse_non_negative_bigint(row["Stock Total"], default=None)
     if total is None:
-        errors.append("stock total inválido o negativo")
+        detalles.append(
+            _detalle(
+                "Stock Total",
+                row["Stock Total"],
+                "STOCK-VALIDACION",
+                "stock total inválido o negativo",
+            )
+        )
     elif (
         consignacion is not None
         and propio is not None
         and total != consignacion + propio
     ):
-        errors.append("stock total inconsistente")
+        detalles.append(
+            _detalle(
+                "Stock Total",
+                row["Stock Total"],
+                "STOCK-VALIDACION",
+                "stock total inconsistente",
+            )
+        )
 
     ventas = parse_non_negative_bigint_or_zero(row["Ventas"])
     if ventas is None:
-        errors.append("ventas inválidas")
+        detalles.append(
+            _detalle(
+                "Ventas",
+                row["Ventas"],
+                "STOCK-VALIDACION",
+                "ventas inválidas",
+            )
+        )
 
-    if errors:
-        return None, "; ".join(errors)
+    if detalles:
+        return None, detalles
+
+    titulo = _clean_text(row["Titulo"])
+    autor = _clean_text(row["Autor"])
+    editorial = _clean_text(row["Editorial"])
+    clasificacion = _clean_text(row["Clasificación"])
 
     normalized = cast(
         Row,
@@ -216,6 +286,26 @@ def transform_row(
             loaded_at,
         ),
     )
+    return normalized, []
+
+
+def transform_row(
+    row: Mapping[str, Any],
+    *,
+    source_file: str,
+    loaded_at: datetime,
+) -> tuple[Row | None, str | None]:
+    """Transforma una fila de stock; retorna (fila_normalizada, motivo)."""
+    normalized, detalles = _validate_row(
+        row,
+        source_file=source_file,
+        loaded_at=loaded_at,
+    )
+    if normalized is None:
+        motivo = "; ".join(
+            detalle["motivo"] for detalle in detalles
+        ) or "fila inválida"
+        return None, motivo
     return normalized, None
 
 
@@ -232,16 +322,49 @@ def transform(
     rows: list[Row] = []
     rejected: list[dict[str, Any]] = []
 
-    for row in dataframe.to_dict(orient="records"):
-        result, error = transform_row(
+    for fila, row in enumerate(
+        dataframe.to_dict(orient="records"), start=2
+    ):
+        result, detalles = _validate_row(
             row,
             source_file=source_file,
             loaded_at=loaded_at,
         )
         if result is None:
-            motivo = error or "fila inválida"
-            rejected.append({"isbn": row["ISBN"], "motivo": motivo})
-            logger.debug("Fila descartada ISBN=%r: %s", row["ISBN"], motivo)
+            for detalle in detalles:
+                detalle["fila"] = fila
+            motivo = "; ".join(
+                detalle["motivo"] for detalle in detalles
+            ) or "fila inválida"
+            principal = detalles[0] if detalles else {}
+            rejected.append(
+                {
+                    "isbn": row["ISBN"],
+                    "archivo_origen": source_file,
+                    "fila": fila,
+                    "columna": principal.get("columna"),
+                    "valor_crudo": principal.get("valor_crudo"),
+                    "regla": principal.get("regla"),
+                    "severidad": principal.get("severidad", "error"),
+                    "motivo": motivo,
+                    "detalles": detalles,
+                }
+            )
+            logger.debug(
+                "Fila %d descartada ISBN=%r: %s",
+                fila,
+                row["ISBN"],
+                motivo,
+            )
+            for detalle in detalles:
+                logger.debug(
+                    "  fila=%d columna=%s regla=%s valor=%r motivo=%s",
+                    fila,
+                    detalle["columna"],
+                    detalle["regla"],
+                    detalle["valor_crudo"],
+                    detalle["motivo"],
+                )
             continue
         rows.append(result)
 
@@ -419,9 +542,10 @@ def run(
     if schema_only:
         schema = get_schema()
         with db.connection() as conn:
+            db.execute_sql_file(conn, QUARANTINE_SQL, schema=schema)
             db.execute_sql_file(conn, SQL_FILE, schema=schema)
         logger.info(
-            "Schema y tablas %s.%s/%s verificados",
+            "Schema, tablas %s.%s/%s y cuarentena verificados",
             schema,
             TABLE,
             HISTORY_TABLE,
@@ -451,12 +575,19 @@ def run(
         len(rows),
     )
 
+    cuarentena = flatten_rejections(rejected)
+
     if dry_run:
+        logger.info(
+            "Dry run: %d filas se habrían enviado a cuarentena",
+            len(cuarentena),
+        )
         logger.info("Dry run finalizado; no se escribió en PostgreSQL")
         return
 
     schema = get_schema()
     with db.connection() as conn:
+        db.execute_sql_file(conn, QUARANTINE_SQL, schema=schema)
         db.execute_sql_file(conn, SQL_FILE, schema=schema)
         with conn.transaction():
             loaded = db.upsert_table(
@@ -470,15 +601,24 @@ def run(
                 temp_table="stock_staging",
             )
             closed, opened = _refresh_history(conn, schema)
+            insert_quarantine(
+                conn,
+                schema,
+                TABLE,
+                source_file,
+                cuarentena,
+            )
 
     logger.info(
         "Carga finalizada en %s.%s: %d filas en staging, "
-        "%d versiones cerradas, %d versiones abiertas",
+        "%d versiones cerradas, %d versiones abiertas, "
+        "%d filas en cuarentena",
         schema,
         TABLE,
         loaded,
         closed,
         opened,
+        len(cuarentena),
     )
 
 

@@ -76,6 +76,16 @@ def test_rut_es_primary_key() -> None:
     assert re.search(r"\brut\s+VARCHAR\(10\)\s+PRIMARY KEY\b", cuerpo)
 
 
+@pytest.mark.parametrize("columna", ["nombre", "email", "alta"])
+def test_columnas_opcionales_no_tienen_not_null(columna: str) -> None:
+    cuerpo = _cuerpo_create_table()
+    coincidencia = re.search(
+        rf"^\s*{columna}\s+[^\n,]+", cuerpo, re.MULTILINE
+    )
+    assert coincidencia is not None, f"no se encontró la columna {columna}"
+    assert "NOT NULL" not in coincidencia.group(0).upper()
+
+
 @pytest.mark.parametrize(
     "patron",
     [

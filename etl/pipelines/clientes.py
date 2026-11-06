@@ -54,7 +54,17 @@ COLUMNS = (
     "canjes",
 )
 
-Row = tuple[str, str, str, date, str, date, int, int, int]
+Row = tuple[
+    str,
+    str | None,
+    str | None,
+    date | None,
+    str,
+    date,
+    int,
+    int,
+    int,
+]
 
 CANAL_MAP = {
     "local": "Local",
@@ -125,21 +135,32 @@ def transform_row(
     if rut is None:
         errors.append("RUT inválido")
 
-    nombre = normalize_name(row["Nombre"])
-    if nombre is None:
-        errors.append("nombre inválido")
+    nombre_crudo = str(row["Nombre"]).strip()
+    if nombre_crudo == "0":
+        nombre = None
+    else:
+        nombre = normalize_name(row["Nombre"])
+        if nombre is None:
+            errors.append("nombre inválido")
 
-    email = normalize_email(row["Email"])
-    if email is None:
-        errors.append("email inválido")
+    email_crudo = str(row["Email"]).strip()
+    if email_crudo == "0":
+        email = None
+    else:
+        email = normalize_email(row["Email"])
+        if email is None:
+            errors.append("email inválido")
 
-    alta = parse_date_dmy(
-        row["Alta"],
-        min_date=MIN_ALTA_DATE,
-        max_date=date.today(),
-    )
+    alta = parse_date_dmy(row["Alta"], min_date=MIN_ALTA_DATE)
     if alta is None:
         errors.append("alta inválida")
+    elif alta.year > date.today().year:
+        logger.warning(
+            "Alta futura para RUT %s: %s; se guarda alta=NULL",
+            rut or row["Rut cliente"],
+            alta,
+        )
+        alta = None
 
     canal = normalize_canal(row["Canal"])
     if canal is None:

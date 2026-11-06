@@ -96,7 +96,9 @@ class TestTransformRow:
         ("cambios", "motivo"),
         [
             ({"ISBN": "abc"}, "ISBN inválido o vacío"),
-            ({"PVP": "abc"}, "PVP inválido o negativo"),
+            ({"PVP": "abc"}, "PVP inválido o menor a 100"),
+            ({"PVP": "99"}, "PVP inválido o menor a 100"),
+            ({"PVP": "0"}, "PVP inválido o menor a 100"),
             (
                 {"Stock Total": "-1"},
                 "stock total inválido o negativo",
@@ -127,6 +129,13 @@ class TestTransformRow:
         assert row is None
         assert error is not None
         assert motivo in error
+
+    def test_pvp_de_100_es_valido(self) -> None:
+        row, error = _transformar({"PVP": "100"})
+
+        assert error is None
+        assert row is not None
+        assert row[5] == 100
 
 
 class TestTransformLote:
@@ -170,7 +179,7 @@ class TestTransformLote:
         for row in rows:
             assert len(row) == len(COLUMNS)
             _, _, _, _, _, pvp, consignacion, propio, total, ventas, *rest = row
-            assert pvp >= 0
+            assert pvp >= 100
             assert consignacion >= 0
             assert propio >= 0
             assert total == consignacion + propio

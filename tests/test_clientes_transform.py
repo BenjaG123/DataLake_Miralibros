@@ -6,6 +6,7 @@ y no se conecta a PostgreSQL.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import date
 from typing import Any
@@ -86,9 +87,11 @@ class TestTransformLote:
             rut, nombre, email, alta, canal, cumple, *contadores = fila
             cuerpo, dv = rut.split("-")
             assert validate_rut_dv(cuerpo, dv), f"RUT con DV incorrecto: {rut}"
-            assert nombre
-            assert email
-            assert isinstance(alta, date)
+            # El contrato permite NULL cuando el crudo trae "0" o un Alta
+            # futura; el lote normal no debería ejercitar esos casos.
+            assert nombre is None or nombre
+            assert email is None or email
+            assert alta is None or isinstance(alta, date)
             assert canal in ("Local", "Web")
             assert isinstance(cumple, date)
             assert 1900 <= cumple.year <= date.today().year
@@ -144,3 +147,37 @@ class TestTransformFila:
         assert resultado is not None
         assert resultado[5].month == 6
         assert resultado[5].day == 14
+
+    def test_nombre_cero_textual_queda_none_sin_rechazo(self) -> None:
+        fila = _fila_valida()
+        fila["Nombre"] = "0"
+
+        resultado, motivo = transform_row(fila, reference_year=2024)
+
+        assert motivo is None
+        assert resultado is not None
+        assert resultado[1] is None
+
+    def test_email_cero_textual_queda_none_sin_rechazo(self) -> None:
+        fila = _fila_valida()
+        fila["Email"] = "0"
+
+        resultado, motivo = transform_row(fila, reference_year=2024)
+
+        assert motivo is None
+        assert resultado is not None
+        assert resultado[2] is None
+
+    def test_alta_futura_queda_none_y_advierte(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fila = _fila_valida()
+        fila["Alta"] = f"01/01/{date.today().year + 1}"
+
+        with caplog.at_level(logging.WARNING):
+            resultado, motivo = transform_row(fila, reference_year=2024)
+
+        assert motivo is None
+        assert resultado is not None
+        assert resultado[3] is None
+        assert "Alta futura" in caplog.text

@@ -5,9 +5,9 @@ CREATE SCHEMA IF NOT EXISTS {{schema}};
 
 CREATE TABLE IF NOT EXISTS {{schema}}.clientes (
     rut       VARCHAR(10)  PRIMARY KEY,
-    nombre    VARCHAR(150) NOT NULL,
-    email     VARCHAR(254) NOT NULL,
-    alta      DATE         NOT NULL,
+    nombre    VARCHAR(150),
+    email     VARCHAR(254),
+    alta      DATE,
     canal     VARCHAR(10)  NOT NULL,
     cumple    DATE         NOT NULL,
     puntos    BIGINT       DEFAULT 0 NOT NULL,

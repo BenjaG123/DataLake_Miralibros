@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Iterator
@@ -169,14 +170,31 @@ class TestCarga:
             llamadas["historial"] = True
             return (0, 82)
 
+        def cuarentena_falsa(
+            conn: object,
+            schema: str,
+            entidad: str,
+            archivo_origen: str,
+            filas: Iterable[object],
+        ) -> int:
+            filas_lista = list(filas)
+            llamadas["cuarentena"] = (entidad, archivo_origen, len(filas_lista))
+            return len(filas_lista)
+
         monkeypatch.setenv("PG_SCHEMA", "test_silver")
         monkeypatch.setattr(stock.db, "connection", conexion_falsa)
         monkeypatch.setattr(stock.db, "execute_sql_file", execute_falso)
         monkeypatch.setattr(stock.db, "upsert_table", upsert_falso)
         monkeypatch.setattr(stock, "_refresh_history", historial_falso)
+        monkeypatch.setattr(stock, "insert_quarantine", cuarentena_falsa)
 
         stock.run(archivos_fixtures["stock"])
 
         assert llamadas["sql"] == stock.SQL_FILE
         assert llamadas["upsert"] == ("stock", 82)
         assert llamadas["historial"] is True
+        assert llamadas["cuarentena"] == (
+            "stock",
+            "STOCK LIBRERIA.xlsx",
+            18,
+        )

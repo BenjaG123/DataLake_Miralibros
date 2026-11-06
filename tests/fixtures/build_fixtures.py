@@ -97,22 +97,9 @@ STOCK_COLUMNS = (
     "Ventas",
 )
 
-VENTAS_COLUMNS = (
-    "Correlativo",
-    "Orden Web",
-    "Fecha",
-    "Medio de Pago",
-    "Tipo Documento",
-    "Folio",
-    "Voucher Máquina de F",
-    "Total Venta",
-    "Cant. Items",
-    "Canal",
-    "Feria",
-    "Tiene Descuento",
-    "Estado",
-    "Es Dev.",
-)
+# El header crudo real vive en el pipeline: una sola fuente de verdad para
+# que el generador y ``ventas.SOURCE_COLUMNS`` no puedan divergir.
+VENTAS_COLUMNS = ventas_pipeline.SOURCE_COLUMNS
 
 MESES_ES = (
     "enero",
@@ -895,7 +882,7 @@ def _fila_venta(
         "Medio de Pago": rng.choice(MEDIOS_PAGO),
         "Tipo Documento": tipo_documento,
         "Folio": folio,
-        "Voucher Máquina de F": None,
+        "Voucher Máquina de Pago": None,
         "Total Venta": total_venta,
         "Cant. Items": cantidad,
         "Canal": canal,
@@ -1237,8 +1224,9 @@ def _verificar_invariantes(
 
     for dataframe in (ventas_libreria, ventas_cafeteria):
         assert all(
-            pd.isna(valor) for valor in dataframe["Voucher Máquina de F"]
-        ), "Voucher Máquina de F debe estar 100 % vacío"
+            pd.isna(valor)
+            for valor in dataframe["Voucher Máquina de Pago"]
+        ), "Voucher Máquina de Pago debe estar 100 % vacío"
         assert all(pd.isna(valor) for valor in dataframe["Feria"]), (
             "Feria debe estar 100 % vacía"
         )
@@ -1485,7 +1473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("  - Total Venta / Cant. Items nulos o negativos: sí")
     print("  - Tickets válidos con suma exacta de precios: sí")
     print("  - Compras de clientes como monto monetario en CLP: sí")
-    print("  - Voucher Máquina de F y Feria 100 % vacías: sí")
+    print("  - Voucher Máquina de Pago y Feria 100 % vacías: sí")
     print("Regenerá estos XLSX con este mismo script cuando haga falta.")
     return 0
 

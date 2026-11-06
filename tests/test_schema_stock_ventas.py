@@ -245,12 +245,19 @@ class TestSchema:
 class TestUpsertSinDestruccion:
     """Los pipelines incrementales no vacían ni alteran tablas."""
 
+    # Solo SQL destructivo real: ``dataframe.drop(...)`` de pandas es válido.
+    OPERACIONES_DESTRUCTIVAS = (
+        r"\bTRUNCATE\s+(TABLE\s+)?",
+        r"\bDROP\s+(TABLE|SCHEMA|INDEX|VIEW|CONSTRAINT|COLUMN)\b",
+        r"\bALTER\s+(TABLE|SCHEMA|INDEX|VIEW)\b",
+    )
+
     @pytest.mark.parametrize("codigo", [CODIGO_STOCK, CODIGO_VENTAS])
     def test_no_ejecutan_operaciones_destructivas(self, codigo: str) -> None:
-        for operacion in ("TRUNCATE", "DROP", "ALTER"):
+        for patron in self.OPERACIONES_DESTRUCTIVAS:
             assert (
-                re.search(rf"\b{operacion}\b", codigo, re.IGNORECASE) is None
-            ), f"el pipeline contiene {operacion}"
+                re.search(patron, codigo, re.IGNORECASE) is None
+            ), f"el pipeline contiene SQL destructivo: {patron}"
 
     def test_stock_usa_upsert_table(self) -> None:
         assert "db.upsert_table(" in CODIGO_STOCK

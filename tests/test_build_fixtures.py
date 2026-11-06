@@ -73,6 +73,13 @@ def _catalogos(
     }
 
 
+def test_ventas_columns_coincide_con_el_pipeline(
+    generador_fixtures: ModuleType,
+) -> None:
+    """El generador no puede duplicar ni desviar el header real del pipeline."""
+    assert generador_fixtures.VENTAS_COLUMNS == ventas.SOURCE_COLUMNS
+
+
 def test_build_all_genera_los_cuatro_archivos_esperados(
     generador_fixtures: ModuleType, tmp_path: Path
 ) -> None:

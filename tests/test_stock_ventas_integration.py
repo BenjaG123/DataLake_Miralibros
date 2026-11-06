@@ -191,7 +191,7 @@ def _cargar_ventas(
     rechazadas: list[dict[str, Any]] = []
 
     for ruta in rutas:
-        dataframe = read_excel_as_str(ruta)
+        dataframe = ventas._leer_ventas(ruta)
         filas, rechazos = ventas.transform(
             dataframe,
             origen=ventas.inferir_origen(ruta),

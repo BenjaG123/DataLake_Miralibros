@@ -10,12 +10,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from etl.pipelines import ventas
 from etl.pipelines.ventas import (
     LINE_COLUMNS,
     TICKET_COLUMNS,
     Client,
     PriceCatalog,
     Ticket,
+    _leer_ventas,
     _line_rejection,
     assign_clients,
     build_lines,
@@ -46,7 +48,7 @@ def _fila_valida() -> dict[str, object]:
         "Medio de Pago": "Efectivo",
         "Tipo Documento": "Boleta",
         "Folio": "1000",
-        "Voucher Máquina de F": "",
+        "Voucher Máquina de Pago": "",
         "Total Venta": "1.500",
         "Cant. Items": "2",
         "Canal": "Local",
@@ -222,6 +224,142 @@ class TestTransformRow:
         assert ticket is None
         assert error is not None
         assert motivo in error
+
+
+class TestContratoDeColumnas:
+    """Header crudo real, columnas descartadas y columnas opcionales."""
+
+    COLUMNAS_CRUDAS = (
+        "Correlativo",
+        "Orden Web",
+        "Fecha",
+        "Medio de Pago",
+        "Tipo Documento",
+        "Folio",
+        "Voucher Máquina de Pago",
+        "Total Venta",
+        "Cant. Items",
+        "Canal",
+        "Feria",
+        "Tiene Descuento",
+        "Estado",
+        "Es Dev.",
+    )
+
+    MINIMAS = (
+        "Correlativo",
+        "Fecha",
+        "Tipo Documento",
+        "Folio",
+        "Total Venta",
+        "Cant. Items",
+    )
+
+    def test_source_columns_es_el_header_real(self) -> None:
+        assert ventas.SOURCE_COLUMNS == self.COLUMNAS_CRUDAS
+
+    def test_leer_ventas_elimina_columnas_descartadas(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        completo = pd.DataFrame(
+            [{columna: "" for columna in ventas.SOURCE_COLUMNS}]
+        )
+        monkeypatch.setattr(
+            ventas,
+            "read_excel_as_str",
+            lambda _path: completo,
+        )
+
+        dataframe = _leer_ventas("VENTAS LIBRERIA.xlsx")
+
+        assert "Voucher Máquina de Pago" not in dataframe.columns
+        assert "Feria" not in dataframe.columns
+        assert tuple(dataframe.columns) == tuple(
+            columna
+            for columna in ventas.SOURCE_COLUMNS
+            if columna not in ventas.DROPPED_COLUMNS
+        )
+
+    def test_leer_ventas_tolera_opcionales_ausentes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        minimo = pd.DataFrame(
+            [{columna: "" for columna in self.MINIMAS}]
+        )
+        monkeypatch.setattr(
+            ventas,
+            "read_excel_as_str",
+            lambda _path: minimo,
+        )
+
+        dataframe = _leer_ventas("VENTAS LIBRERIA.xlsx")
+
+        assert tuple(dataframe.columns) == self.MINIMAS
+
+    def test_origen_extra_no_se_exige_ni_llega_al_ticket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fila = {
+            "Correlativo": "1",
+            "Fecha": "2025-01-02",
+            "Tipo Documento": "Boleta",
+            "Folio": "1000",
+            "Total Venta": "1500",
+            "Cant. Items": "2",
+            "Origen": "CAFETERIA",
+        }
+        monkeypatch.setattr(
+            ventas,
+            "read_excel_as_str",
+            lambda _path: pd.DataFrame([fila]),
+        )
+
+        dataframe = _leer_ventas("VENTAS LIBRERIA.xlsx")
+        tickets, rechazos = ventas.transform(
+            dataframe,
+            origen="LIBRERIA",
+            source_file=SOURCE_FILE,
+            loaded_at=LOADED_AT,
+        )
+
+        assert "Origen" in dataframe.columns
+        assert "Origen" not in ventas.TICKET_COLUMNS
+        assert rechazos == []
+        assert len(tickets) == 1
+        assert tickets[0].origen == "LIBRERIA"
+
+    def test_transform_sin_opcionales_no_lanza_keyerror(self) -> None:
+        fila = {
+            "Correlativo": "1",
+            "Fecha": "2025-01-02",
+            "Tipo Documento": "Boleta",
+            "Folio": "1000",
+            "Total Venta": "1500",
+            "Cant. Items": "2",
+        }
+
+        tickets, rechazos = ventas.transform(
+            pd.DataFrame([fila]),
+            origen="LIBRERIA",
+            source_file=SOURCE_FILE,
+            loaded_at=LOADED_AT,
+        )
+        desde_dict, error = ventas.transform_row(
+            fila,
+            origen="LIBRERIA",
+            source_file=SOURCE_FILE,
+            loaded_at=LOADED_AT,
+        )
+
+        assert rechazos == []
+        assert len(tickets) == 1
+        assert error is None
+        assert desde_dict is not None
+        for ticket in (tickets[0], desde_dict):
+            assert ticket.medio_pago is None
+            assert ticket.tiene_descuento is None
+            assert ticket.es_devolucion is None
+            assert ticket.estado is None
 
 
 class TestReglasDeRechazo:

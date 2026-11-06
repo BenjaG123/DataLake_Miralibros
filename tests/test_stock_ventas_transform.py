@@ -50,7 +50,7 @@ def _fila_venta(**cambios: Any) -> dict[str, Any]:
         "Medio de Pago": "Efectivo",
         "Tipo Documento": "Boleta",
         "Folio": "100",
-        "Voucher Máquina de F": "",
+        "Voucher Máquina de Pago": "",
         "Total Venta": "15000",
         "Cant. Items": "2",
         "Canal": "Local",

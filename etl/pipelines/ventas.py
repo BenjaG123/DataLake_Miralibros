@@ -82,7 +82,7 @@ SOURCE_COLUMNS = (
     "Medio de Pago",
     "Tipo Documento",
     "Folio",
-    "Voucher Máquina de F",
+    "Voucher Máquina de Pago",
     "Total Venta",
     "Cant. Items",
     "Canal",
@@ -90,6 +90,25 @@ SOURCE_COLUMNS = (
     "Tiene Descuento",
     "Estado",
     "Es Dev.",
+)
+
+# Columnas mínimas para validar y cargar cada ticket. Las columnas opcionales
+# (por ejemplo ``Orden Web``, ``Canal`` o ``Estado``) pueden faltar sin romper
+# la lectura; ``Origen`` nunca se exige porque se infiere del nombre del archivo.
+REQUIRED_COLUMNS = (
+    "Correlativo",
+    "Fecha",
+    "Tipo Documento",
+    "Folio",
+    "Total Venta",
+    "Cant. Items",
+)
+
+# Columnas que se descartan en cuanto se lee el archivo: no forman parte del
+# modelo ``ventas_ticket``/``ventas_linea`` y no deben llegar a la validación.
+DROPPED_COLUMNS = (
+    "Voucher Máquina de Pago",
+    "Feria",
 )
 
 TICKET_COLUMNS = (
@@ -260,6 +279,19 @@ def inferir_origen(path: str | Path) -> str:
     )
 
 
+def _leer_ventas(path: str | Path) -> pd.DataFrame:
+    """Lee un Excel de ventas y limpia las columnas que no se usan.
+
+    Solo se exigen las columnas de ``REQUIRED_COLUMNS``; las opcionales pueden
+    faltar y la columna ``Origen`` del archivo (si existe) se acepta como extra
+    sin exigirse. Las columnas de ``DROPPED_COLUMNS`` se eliminan de inmediato
+    para que la validación y el modelo no las consideren.
+    """
+    dataframe = read_excel_as_str(path)
+    require_columns(dataframe, REQUIRED_COLUMNS, source=path)
+    return dataframe.drop(columns=list(DROPPED_COLUMNS), errors="ignore")
+
+
 def normalize_canal(value: Any) -> str | None:
     """Normaliza el canal a ``Local`` o ``Web``; otro valor queda ``None``."""
     raw = _clean_text(value)
@@ -425,21 +457,23 @@ def _validate_row(
             )
         )
 
-    if _folio_invalido(row["Folio"]):
+    folio = row.get("Folio", "")
+    if _folio_invalido(folio):
         detalles.append(
             _detalle(
                 "Folio",
-                row["Folio"],
+                folio,
                 "VENTAS-FOLIO-001",
                 "folio inválido o vacío",
             )
         )
 
-    if _sin_documento(row["Tipo Documento"]):
+    tipo_documento = row.get("Tipo Documento", "")
+    if _sin_documento(tipo_documento):
         detalles.append(
             _detalle(
                 "Tipo Documento",
-                row["Tipo Documento"],
+                tipo_documento,
                 "VENTAS-DOC-001",
                 "tipo documento sin documento",
             )
@@ -453,14 +487,14 @@ def _validate_row(
         correlativo=correlativo,
         fecha=fecha,
         hora_simulada=generar_hora_simulada(origen, correlativo, fecha),
-        medio_pago=_clean_text(row["Medio de Pago"]),
-        tipo_documento=_clean_text(row["Tipo Documento"]),
-        folio=_clean_text(row["Folio"]),
+        medio_pago=_clean_text(row.get("Medio de Pago")),
+        tipo_documento=_clean_text(row.get("Tipo Documento")),
+        folio=_clean_text(row.get("Folio")),
         total_venta=total_venta,
         cant_items=cant_items,
-        tiene_descuento=normalize_si_no(row["Tiene Descuento"]),
-        es_devolucion=normalize_si_no(row["Es Dev."]),
-        estado=_clean_text(row["Estado"]),
+        tiene_descuento=normalize_si_no(row.get("Tiene Descuento")),
+        es_devolucion=normalize_si_no(row.get("Es Dev.")),
+        estado=_clean_text(row.get("Estado")),
         source_file=source_file,
         loaded_at=loaded_at,
         fila=fila,
@@ -1087,8 +1121,7 @@ def run(
 
     for path in paths:
         origen = inferir_origen(path)
-        dataframe = read_excel_as_str(path)
-        require_columns(dataframe, SOURCE_COLUMNS, source=path)
+        dataframe = _leer_ventas(path)
 
         file_rows, file_rejected = transform(
             dataframe,

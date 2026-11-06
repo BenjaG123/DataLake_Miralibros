@@ -26,7 +26,10 @@ Para comparar reproducibilidad sin pisar los artefactos principales::
 
 Los datos se escriben "sucios" a propósito (RUT con DV incorrecto, fechas en
 varios formatos, montos negativos o nulos, columnas 100 % vacías) para que los
-validadores tengan trabajo real.
+validadores tengan trabajo real. Además, cada ticket válido se construye con
+``Cant. Items`` precios reales de su catálogo: ``Total Venta`` es la suma
+exacta. Las compras de clientes son montos históricos en CLP y se asignan con
+subconjuntos disjuntos de tickets elegibles por fecha de alta.
 """
 
 from __future__ import annotations
@@ -36,7 +39,9 @@ import random
 import re
 import sys
 import unicodedata
+from collections import defaultdict
 from collections.abc import Sequence
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,12 +51,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from etl.validators import calculate_rut_dv  # noqa: E402
+from etl.pipelines import clientes as clientes_pipeline  # noqa: E402
+from etl.pipelines import stock as stock_pipeline  # noqa: E402
+from etl.pipelines import ventas as ventas_pipeline  # noqa: E402
+from etl.readers import read_csv_as_str  # noqa: E402
+from etl.validators import (  # noqa: E402
+    calculate_rut_dv,
+    parse_non_negative_bigint,
+)
 
 # Semilla fija documentada: cambiarla cambia todos los archivos generados.
 SEED = 20240517
 
 RAW_DIR = Path(__file__).resolve().parent / "raw"
+CATALOGO_CAFETERIA = RAW_DIR / "CATALOGO CAFETERIA.csv"
+
+# Fecha fija para que la transformación de stock/clientes sea reproducible.
+CARGA_FIJA = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+# Clientes con compras históricas > 0: uno con dos tickets y el resto con uno.
+CLIENTES_CON_COMPRAS = 21
 
 CLIENTES_COLUMNS = (
     "Rut cliente",
@@ -372,7 +391,9 @@ PVP_TEXTO = (
 
 VENTAS_LIBRERIA = {
     "archivo": "VENTAS LIBRERIA.xlsx",
-    "total": 150,
+    "filas_base": 150,
+    "filas_extra": 5,
+    "total": 155,
     "correlativo_base": 1,
     "folio_base": 100_000,
     "monto_min": 2_990,
@@ -385,7 +406,9 @@ VENTAS_LIBRERIA = {
 
 VENTAS_CAFETERIA = {
     "archivo": "VENTAS CAFETERIA.xlsx",
-    "total": 80,
+    "filas_base": 80,
+    "filas_extra": 5,
+    "total": 85,
     "correlativo_base": 1_001,
     "folio_base": 200_000,
     "monto_min": 1_200,
@@ -395,6 +418,19 @@ VENTAS_CAFETERIA = {
     "cant_nula": (13, 33),
     "cant_negativa": (18, 38, 55),
 }
+
+# Filas extra que solo fallan por cabecera. La última acumula Folio y
+# Tipo Documento inválidos para ejercitar más de un detalle por rechazo.
+FILAS_EXTRA_FOLIO_DOC = (
+    {"folio": "0", "tipo_documento": "Boleta"},
+    {"folio": None, "tipo_documento": "Factura"},
+    {"folio": "VALIDO", "tipo_documento": "Sin Documento"},
+    {"folio": "VALIDO", "tipo_documento": "  SIN   DOCUMENTO "},
+    {
+        "folio": "000",
+        "tipo_documento": "Sin Documento",
+    },
+)
 
 
 def _slug(texto: str) -> str:
@@ -518,7 +554,9 @@ def _fecha_alta(rng: random.Random, indice: int) -> tuple[Any, bool]:
         posicion = CLIENTES_ALTA_INVALIDA.index(indice)
         return opciones[posicion], True
 
-    anio = rng.randint(2015, 2024)
+    # Tope 2023: toda Alta válida queda antes de la primera venta del lote
+    # (FECHAS_VENTAS comienza el 2024-01-02). Ver _verificar_invariantes.
+    anio = rng.randint(2015, 2023)
     mes = rng.randint(1, 12)
     dia = rng.randint(1, 28)
     separador = rng.choice(("/", "-"))
@@ -774,45 +812,156 @@ def _generar_stock(rng: random.Random) -> tuple[pd.DataFrame, dict[str, int]]:
     return dataframe, estadisticas
 
 
+def _precios_libreria(stock: pd.DataFrame) -> tuple[int, ...]:
+    """Precios PVP de los libros que ``stock.transform`` acepta."""
+    filas, _ = stock_pipeline.transform(
+        _como_texto(stock),
+        source_file="STOCK LIBRERIA.xlsx",
+        loaded_at=CARGA_FIJA,
+    )
+    precios = sorted(
+        {
+            fila[5]
+            for fila in filas
+            if fila[5] is not None and fila[5] >= 100
+        }
+    )
+    assert precios, "el stock generado no tiene PVP válidos para ventas"
+    return tuple(precios)
+
+
+def _precios_cafeteria() -> tuple[int, ...]:
+    """Precios distintos del catálogo versionado de cafetería."""
+    dataframe = read_csv_as_str(CATALOGO_CAFETERIA)
+    precios = sorted(
+        {
+            precio
+            for valor in dataframe["precio"]
+            if (precio := parse_non_negative_bigint(valor, default=None))
+            is not None
+        }
+    )
+    assert precios, f"el catálogo {CATALOGO_CAFETERIA.name} no tiene precios"
+    return tuple(precios)
+
+
+def _elegir_ticket_exacto(
+    rng: random.Random,
+    precios: Sequence[int],
+    *,
+    usados: set[int] | None = None,
+    max_items: int = 6,
+) -> tuple[int, int]:
+    """Elige ``N`` precios reales y devuelve ``(N, suma exacta)``.
+
+    Si se pasa ``usados`` intenta que el total no se repita; cuando el
+    catálogo es pequeño (cafetería) puede agotar los intentos y se permite
+    un total repetido. La combinación elegida siempre es reconstruible porque
+    usa precios del catálogo correspondiente.
+    """
+    intentos = 50 if usados is not None else 1
+    for _ in range(intentos):
+        cantidad = rng.randint(1, max_items)
+        total = sum(rng.choice(precios) for _ in range(cantidad))
+        if usados is None or total not in usados:
+            if usados is not None:
+                usados.add(total)
+            return cantidad, total
+
+    # Catálogo pequeño: se acepta un total repetido pero exacto.
+    cantidad = rng.randint(1, max_items)
+    total = sum(rng.choice(precios) for _ in range(cantidad))
+    return cantidad, total
+
+
+def _fila_venta(
+    rng: random.Random,
+    *,
+    correlativo: int,
+    folio: Any,
+    tipo_documento: str,
+    total_venta: Any,
+    cantidad: Any,
+) -> dict[str, Any]:
+    """Arma una fila cruda de ventas con columnas de origen conservadas."""
+    canal = "Web" if rng.random() < 0.3 else "Local"
+    orden_web: Any = (
+        rng.randint(500_000, 599_999) if canal == "Web" else None
+    )
+    return {
+        "Correlativo": correlativo,
+        "Orden Web": orden_web,
+        "Fecha": rng.choice(FECHAS_VENTAS),
+        "Medio de Pago": rng.choice(MEDIOS_PAGO),
+        "Tipo Documento": tipo_documento,
+        "Folio": folio,
+        "Voucher Máquina de F": None,
+        "Total Venta": total_venta,
+        "Cant. Items": cantidad,
+        "Canal": canal,
+        "Feria": None,
+        "Tiene Descuento": "SI" if rng.random() < 0.2 else "NO",
+        "Estado": "Anulada" if rng.random() < 0.1 else "Emitida",
+        "Es Dev.": "SI" if rng.random() < 0.08 else "NO",
+    }
+
+
 def _generar_ventas(
     rng: random.Random,
     config: dict[str, Any],
+    precios: Sequence[int],
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Construye un archivo de ventas con montos nulos/negativos inyectados."""
+    """Construye ventas con totales exactos y filas sucias reservadas.
+
+    Cada fila válida usa ``Cant. Items`` precios reales del catálogo y
+    ``Total Venta`` es su suma exacta. Las filas reservadas para total/cantidad
+    inválidos se conservan tal cual; además se agregan filas que solo fallan
+    por Folio o Tipo Documento para ejercitar las reglas de cuarentena.
+    """
     filas: list[dict[str, Any]] = []
     total_nulo = set(config["total_nulo"])
     total_negativo = set(config["total_negativo"])
     cant_nula = set(config["cant_nula"])
     cant_negativa = set(config["cant_negativa"])
+    usados: set[int] = set()
     estadisticas = {
         "filas_con_total_o_cantidad_problematica": 0,
         "total_nulo": 0,
         "total_negativo": 0,
         "cantidad_nula": 0,
         "cantidad_negativa": 0,
+        "folio_invalido": 0,
+        "documento_invalido": 0,
+        "tickets_exactos": 0,
     }
 
-    for indice in range(config["total"]):
-        canal = "Web" if rng.random() < 0.3 else "Local"
-        orden_web: Any = (
-            rng.randint(500_000, 599_999) if canal == "Web" else None
-        )
+    for indice in range(config["filas_base"]):
+        folio: Any = config["folio_base"] + indice
+        tipo_documento = "Factura" if rng.random() < 0.15 else "Boleta"
 
-        total_venta: Any = rng.randint(config["monto_min"], config["monto_max"])
         if indice in total_nulo:
-            total_venta = None
+            total_venta: Any = None
+            cantidad: Any = rng.randint(1, 6)
             estadisticas["total_nulo"] += 1
         elif indice in total_negativo:
             total_venta = -rng.randint(1_000, config["monto_max"] // 2)
+            cantidad = rng.randint(1, 6)
             estadisticas["total_negativo"] += 1
-
-        cantidad: Any = rng.randint(1, 8)
-        if indice in cant_nula:
+        elif indice in cant_nula:
+            _, total_venta = _elegir_ticket_exacto(rng, precios)
             cantidad = None
             estadisticas["cantidad_nula"] += 1
         elif indice in cant_negativa:
+            _, total_venta = _elegir_ticket_exacto(rng, precios)
             cantidad = -rng.randint(1, 3)
             estadisticas["cantidad_negativa"] += 1
+        else:
+            cantidad, total_venta = _elegir_ticket_exacto(
+                rng,
+                precios,
+                usados=usados,
+            )
+            estadisticas["tickets_exactos"] += 1
 
         if (
             indice in total_nulo
@@ -823,27 +972,42 @@ def _generar_ventas(
             estadisticas["filas_con_total_o_cantidad_problematica"] += 1
 
         filas.append(
-            {
-                "Correlativo": config["correlativo_base"] + indice,
-                "Orden Web": orden_web,
-                "Fecha": rng.choice(FECHAS_VENTAS),
-                "Medio de Pago": rng.choice(MEDIOS_PAGO),
-                "Tipo Documento": (
-                    "Factura" if rng.random() < 0.15 else "Boleta"
-                ),
-                "Folio": config["folio_base"] + indice,
-                "Voucher Máquina de F": None,
-                "Total Venta": total_venta,
-                "Cant. Items": cantidad,
-                "Canal": canal,
-                "Feria": None,
-                "Tiene Descuento": "SI" if rng.random() < 0.2 else "NO",
-                "Estado": "Anulada" if rng.random() < 0.1 else "Emitida",
-                "Es Dev.": "SI" if rng.random() < 0.08 else "NO",
-            }
+            _fila_venta(
+                rng,
+                correlativo=config["correlativo_base"] + indice,
+                folio=folio,
+                tipo_documento=tipo_documento,
+                total_venta=total_venta,
+                cantidad=cantidad,
+            )
+        )
+
+    for offset, extra in enumerate(FILAS_EXTRA_FOLIO_DOC, start=1):
+        cantidad, total_venta = _elegir_ticket_exacto(rng, precios)
+        base = config["filas_base"] + offset
+        if extra["folio"] == "VALIDO":
+            folio_extra: Any = config["folio_base"] + base
+        else:
+            folio_extra = extra["folio"]
+            estadisticas["folio_invalido"] += 1
+        if extra["tipo_documento"].strip().casefold() == "sin documento":
+            estadisticas["documento_invalido"] += 1
+        filas.append(
+            _fila_venta(
+                rng,
+                correlativo=config["correlativo_base"] + base,
+                folio=folio_extra,
+                tipo_documento=extra["tipo_documento"],
+                total_venta=total_venta,
+                cantidad=cantidad,
+            )
         )
 
     dataframe = pd.DataFrame(filas, columns=VENTAS_COLUMNS)
+    assert len(dataframe) == config["total"], (
+        f"{config['archivo']}: se esperaban {config['total']} filas y se "
+        f"generaron {len(dataframe)}"
+    )
     return dataframe, estadisticas
 
 
@@ -863,6 +1027,22 @@ def _es_dv_invalido(valor: Any) -> bool:
     return dv != calculate_rut_dv(cuerpo)
 
 
+def _como_texto(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Mimética de ``read_excel_as_str``: todas las celdas como texto.
+
+    Evita que un entero escrito como ``14380`` llegue a los validadores como
+    ``14380.0`` y que el punto decimal se interprete como separador de miles.
+    """
+    def convertir(valor: Any) -> str:
+        if valor is None or pd.isna(valor):
+            return ""
+        if isinstance(valor, float) and valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+
+    return dataframe.map(convertir)
+
+
 def _filas_venta_problematicas(dataframe: pd.DataFrame) -> int:
     """Cuenta filas con Total Venta o Cant. Items nulo/negativo."""
     total = 0
@@ -878,6 +1058,122 @@ def _filas_venta_problematicas(dataframe: pd.DataFrame) -> int:
     return total
 
 
+def _parse_alta_generada(valor: Any) -> date:
+    """Parsea una Alta sintética válida en formato ``d/m/aaaa`` o ``d-m-aaaa``."""
+    partes = re.split(r"[/-]", str(valor).strip())
+    dia, mes, anio = (int(parte) for parte in partes)
+    return date(anio, mes, dia)
+
+
+def _clientes_validos(
+    clientes: pd.DataFrame,
+) -> list[tuple[int, str, date]]:
+    """Devuelve ``(indice, rut, alta)`` de clientes válidos y asignables."""
+    validos: list[tuple[int, str, date]] = []
+    texto = _como_texto(clientes)
+    for indice, row in enumerate(texto.to_dict(orient="records")):
+        normalizado, _ = clientes_pipeline.transform_row(
+            row,
+            reference_year=2024,
+        )
+        if normalizado is None:
+            continue
+        if indice in CLIENTES_NUMERICO_NULO:
+            # Se conserva el caso nulo reservado: el pipeline lo trata como 0.
+            continue
+        rut, alta = normalizado[0], normalizado[3]
+        if rut is None or alta is None:
+            continue
+        validos.append((indice, rut, alta))
+    return validos
+
+
+def _asignar_compras(
+    clientes: pd.DataFrame,
+    tickets: Sequence[ventas_pipeline.Ticket],
+) -> None:
+    """Asigna montos históricos exactos a un subconjunto de clientes.
+
+    El cliente con dos tickets recibe los dos tickets de mayor monto. Luego
+    cada cliente recibe un único ticket con un total distinto y descendente.
+    ``assign_clients`` procesa a los clientes por ``compras`` descendente, así
+    que cada objetivo encuentra directamente el ticket de igual total.
+    """
+    validos = _clientes_validos(clientes)
+    assert len(validos) >= CLIENTES_CON_COMPRAS, (
+        f"se necesitan {CLIENTES_CON_COMPRAS} clientes válidos y hay "
+        f"{len(validos)}"
+    )
+
+    ordenados = sorted(
+        tickets,
+        key=lambda ticket: (
+            -ticket.total_venta,
+            ticket.origen,
+            ticket.correlativo,
+        ),
+    )
+    assert len(ordenados) > CLIENTES_CON_COMPRAS, (
+        "no hay tickets suficientes para asignar compras"
+    )
+
+    cliente_doble = validos[0]
+    tickets_dobles = ordenados[:2]
+    total_doble = sum(ticket.total_venta for ticket in tickets_dobles)
+
+    objetivos: list[int] = []
+    vistos = {ticket.total_venta for ticket in tickets_dobles}
+    for ticket in ordenados[2:]:
+        if ticket.total_venta in vistos:
+            continue
+        vistos.add(ticket.total_venta)
+        objetivos.append(ticket.total_venta)
+        if len(objetivos) == CLIENTES_CON_COMPRAS - 1:
+            break
+    assert len(objetivos) == CLIENTES_CON_COMPRAS - 1, (
+        "no hay suficientes totales distintos para asignar compras"
+    )
+
+    asignados = {cliente_doble[0]}
+    clientes.at[cliente_doble[0], "Compras"] = total_doble
+    for (indice, _rut, _alta), total in zip(
+        validos[1 : CLIENTES_CON_COMPRAS],
+        objetivos,
+        strict=True,
+    ):
+        clientes.at[indice, "Compras"] = total
+        asignados.add(indice)
+
+    # Todo cliente válido no asignado queda con compras 0; los casos nulos
+    # reservados se conservan para que el pipeline los interprete como 0.
+    for indice, _rut, _alta in validos:
+        if indice not in asignados:
+            clientes.at[indice, "Compras"] = 0
+
+
+def _tickets_de_ventas(
+    ventas_libreria: pd.DataFrame,
+    ventas_cafeteria: pd.DataFrame,
+) -> tuple[list[ventas_pipeline.Ticket], int]:
+    """Transforma ambos archivos y devuelve los tickets válidos y rechazos."""
+    libreria, rechazos_libreria = ventas_pipeline.transform(
+        _como_texto(ventas_libreria),
+        origen="LIBRERIA",
+        source_file=VENTAS_LIBRERIA["archivo"],
+        loaded_at=CARGA_FIJA,
+    )
+    cafeteria, rechazos_cafeteria = ventas_pipeline.transform(
+        _como_texto(ventas_cafeteria),
+        origen="CAFETERIA",
+        source_file=VENTAS_CAFETERIA["archivo"],
+        loaded_at=CARGA_FIJA,
+    )
+    return (
+        [*libreria, *cafeteria],
+        len(rechazos_libreria) + len(rechazos_cafeteria),
+    )
+
+
 def _verificar_invariantes(
     clientes: pd.DataFrame,
     stock: pd.DataFrame,
@@ -885,7 +1181,7 @@ def _verificar_invariantes(
     ventas_cafeteria: pd.DataFrame,
     estadisticas_clientes: dict[str, int],
 ) -> None:
-    """Falla ruidosamente si el generador deja de cumplir el contrato sucio."""
+    """Falla ruidosamente si el generador deja de cumplir el contrato."""
     assert tuple(clientes.columns) == CLIENTES_COLUMNS, "columnas de clientes"
     assert tuple(stock.columns) == STOCK_COLUMNS, "columnas de stock"
     assert tuple(ventas_libreria.columns) == VENTAS_COLUMNS, "columnas librería"
@@ -912,6 +1208,22 @@ def _verificar_invariantes(
         if not pd.isna(valor) and re.search(r"\d{4}", str(valor))
     ]
     assert not con_anio, f"Cumple. no debe tener año: {con_anio[:3]}"
+
+    # Integridad temporal: ninguna Alta válida puede ser posterior a la
+    # primera venta del lote. Las Altas sucias reservadas siguen siendo
+    # inválidas y no participan de esta comprobación.
+    limite_alta = date.fromisoformat(min(FECHAS_VENTAS))
+    altas_validas = [
+        _parse_alta_generada(valor)
+        for indice, valor in enumerate(clientes["Alta"])
+        if indice not in CLIENTES_ALTA_INVALIDA and not pd.isna(valor)
+    ]
+    assert altas_validas, "debe haber Altas válidas para verificar el rango"
+    assert max(altas_validas) <= limite_alta, (
+        "toda Alta válida debe ser <= "
+        f"{limite_alta.isoformat()}; la máxima fue "
+        f"{max(altas_validas).isoformat()}"
+    )
 
     assert sum(1 for valor in stock["ISBN"] if pd.isna(valor)) == len(
         STOCK_ISBN_VACIO
@@ -940,13 +1252,115 @@ def _verificar_invariantes(
 
     correlativos_libreria = set(ventas_libreria["Correlativo"])
     correlativos_cafeteria = set(ventas_cafeteria["Correlativo"])
-    folios_libreria = set(ventas_libreria["Folio"])
-    folios_cafeteria = set(ventas_cafeteria["Folio"])
+    folios_libreria = {
+        str(valor).strip()
+        for valor in ventas_libreria["Folio"]
+        if not pd.isna(valor) and str(valor).strip() not in ("", "0", "000")
+    }
+    folios_cafeteria = {
+        str(valor).strip()
+        for valor in ventas_cafeteria["Folio"]
+        if not pd.isna(valor) and str(valor).strip() not in ("", "0", "000")
+    }
     assert not correlativos_libreria & correlativos_cafeteria, (
         "los correlativos no deben colisionar"
     )
     assert not folios_libreria & folios_cafeteria, (
-        "los folios no deben colisionar"
+        "los folios válidos no deben colisionar"
+    )
+
+    # ------------------------------------------------------------------
+    # Invariantes de sumas exactas, compras monetarias y temporalidad.
+    # ------------------------------------------------------------------
+    precios_libreria = _precios_libreria(stock)
+    precios_cafeteria = _precios_cafeteria()
+    tickets, total_rechazados = _tickets_de_ventas(
+        ventas_libreria,
+        ventas_cafeteria,
+    )
+    assert len(tickets) == 207, "se esperaban 207 tickets válidos"
+    assert total_rechazados == 33, (
+        f"se esperaban 33 filas rechazadas y hay {total_rechazados}"
+    )
+
+    max_n = max(ticket.cant_items for ticket in tickets)
+    for origen, precios in (
+        ("LIBRERIA", precios_libreria),
+        ("CAFETERIA", precios_cafeteria),
+    ):
+        tickets_origen = [
+            ticket for ticket in tickets if ticket.origen == origen
+        ]
+        max_x = max(ticket.total_venta for ticket in tickets_origen)
+        reachable = ventas_pipeline.compute_reachable(
+            precios,
+            max_n,
+            max_x,
+        )
+        for ticket in tickets_origen:
+            combinacion = ventas_pipeline.reconstruct_prices(
+                ticket.total_venta,
+                ticket.cant_items,
+                precios,
+                reachable,
+            )
+            assert combinacion is not None, (
+                f"ticket {origen}/{ticket.correlativo} sin combinación "
+                f"exacta: total={ticket.total_venta} "
+                f"items={ticket.cant_items}"
+            )
+            assert len(combinacion) == ticket.cant_items
+            assert sum(combinacion) == ticket.total_venta
+
+    filas_clientes, rechazos_clientes = clientes_pipeline.transform(
+        _como_texto(clientes)
+    )
+    assert len(filas_clientes) == 127, "se esperaban 127 clientes válidos"
+    assert len(rechazos_clientes) == 23, "se esperaban 23 clientes rechazados"
+
+    clients = [
+        ventas_pipeline.Client(
+            rut=fila[0],
+            alta=fila[3],
+            compras=fila[7],
+        )
+        for fila in filas_clientes
+    ]
+    assignments = ventas_pipeline.assign_clients(tickets, clients)
+    ticket_por_clave = {
+        (ticket.origen, ticket.correlativo): ticket for ticket in tickets
+    }
+    sumas: dict[str, int] = defaultdict(int)
+    conteos: dict[str, int] = defaultdict(int)
+    for clave, rut in assignments.items():
+        ticket = ticket_por_clave[clave]
+        sumas[rut] += ticket.total_venta
+        conteos[rut] += 1
+
+    positivos = [client for client in clients if client.compras > 0]
+    assert len(positivos) == CLIENTES_CON_COMPRAS, (
+        f"se esperaban {CLIENTES_CON_COMPRAS} clientes con compras y hay "
+        f"{len(positivos)}"
+    )
+    for client in positivos:
+        assert client.alta is not None
+        assert sumas[client.rut] == client.compras, (
+            f"RUT {client.rut}: compras={client.compras} y tickets "
+            f"asignados={sumas[client.rut]}"
+        )
+        assert conteos[client.rut] >= 1
+        for clave, rut in assignments.items():
+            if rut == client.rut:
+                assert ticket_por_clave[clave].fecha >= client.alta
+
+    assert any(conteo >= 2 for conteo in conteos.values()), (
+        "debe existir al menos un cliente con dos tickets"
+    )
+    assert len(assignments) == len(set(assignments)), (
+        "un ticket no puede asignarse dos veces"
+    )
+    assert len(assignments) < len(tickets), (
+        "debe haber tickets válidos anónimos"
     )
 
 
@@ -973,14 +1387,24 @@ def build_all(
         random.Random(SEED)
     )
     stock, _ = _generar_stock(random.Random(SEED))
+
+    # Stock y catálogo de cafetería se generan/leen antes que las ventas para
+    # que cada ticket use precios reales de su catálogo.
+    precios_libreria = _precios_libreria(stock)
+    precios_cafeteria = _precios_cafeteria()
     ventas_libreria, _ = _generar_ventas(
         random.Random(SEED),
         VENTAS_LIBRERIA,
+        precios_libreria,
     )
     ventas_cafeteria, _ = _generar_ventas(
         random.Random(SEED),
         VENTAS_CAFETERIA,
+        precios_cafeteria,
     )
+
+    tickets, _ = _tickets_de_ventas(ventas_libreria, ventas_cafeteria)
+    _asignar_compras(clientes, tickets)
 
     _verificar_invariantes(
         clientes,
@@ -1059,6 +1483,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("  - Cumple. sin año y con formatos 'de' / 'd - mes': sí")
     print("  - PVP como texto y Stock Total negativo: sí")
     print("  - Total Venta / Cant. Items nulos o negativos: sí")
+    print("  - Tickets válidos con suma exacta de precios: sí")
+    print("  - Compras de clientes como monto monetario en CLP: sí")
     print("  - Voucher Máquina de F y Feria 100 % vacías: sí")
     print("Regenerá estos XLSX con este mismo script cuando haga falta.")
     return 0

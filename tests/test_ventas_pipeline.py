@@ -30,6 +30,9 @@ class TestArgumentos:
         args = ventas.build_parser().parse_args([])
 
         assert args.inputs is None
+        assert args.clientes == ventas.CLIENTES_PATH
+        assert args.stock == ventas.STOCK_PATH
+        assert args.catalogo_cafeteria == ventas.CATALOGO_CAFETERIA_PATH
         assert args.dry_run is False
         assert args.schema_only is False
         assert args.log_level == "INFO"
@@ -61,6 +64,26 @@ class TestArgumentos:
         assert args.inputs == [primera, segunda]
         assert args.log_level == "DEBUG"
 
+    def test_rutas_de_enriquecimiento(self, tmp_path: Path) -> None:
+        clientes = tmp_path / "clientes.xlsx"
+        stock = tmp_path / "stock.xlsx"
+        catalogo = tmp_path / "catalogo.csv"
+
+        args = ventas.build_parser().parse_args(
+            [
+                "--clientes",
+                str(clientes),
+                "--stock",
+                str(stock),
+                "--catalogo-cafeteria",
+                str(catalogo),
+            ]
+        )
+
+        assert args.clientes == clientes
+        assert args.stock == stock
+        assert args.catalogo_cafeteria == catalogo
+
     def test_dry_run_y_schema_only_son_excluyentes(self) -> None:
         with pytest.raises(SystemExit) as excinfo:
             ventas.build_parser().parse_args(["--dry-run", "--schema-only"])
@@ -85,7 +108,15 @@ class TestSinBaseDeDatos:
 
         assert excinfo.value.code == 0
         salida = capsys.readouterr().out
-        for flag in ("--dry-run", "--schema-only", "--input", "--log-level"):
+        for flag in (
+            "--dry-run",
+            "--schema-only",
+            "--input",
+            "--clientes",
+            "--stock",
+            "--catalogo-cafeteria",
+            "--log-level",
+        ):
             assert flag in salida
 
     def test_dry_run_no_toca_la_base(
@@ -99,6 +130,11 @@ class TestSinBaseDeDatos:
             [
                 archivos_fixtures["ventas_libreria"],
                 archivos_fixtures["ventas_cafeteria"],
+            ],
+            clientes_path=archivos_fixtures["clientes"],
+            stock_path=archivos_fixtures["stock"],
+            catalogo_cafeteria_path=archivos_fixtures[
+                "catalogo_cafeteria"
             ],
             dry_run=True,
         )
@@ -114,6 +150,12 @@ class TestSinBaseDeDatos:
                 str(archivos_fixtures["ventas_libreria"]),
                 "--input",
                 str(archivos_fixtures["ventas_cafeteria"]),
+                "--clientes",
+                str(archivos_fixtures["clientes"]),
+                "--stock",
+                str(archivos_fixtures["stock"]),
+                "--catalogo-cafeteria",
+                str(archivos_fixtures["catalogo_cafeteria"]),
                 "--dry-run",
             ]
         )
@@ -124,10 +166,10 @@ class TestSinBaseDeDatos:
 class TestSchemaOnly:
     """``--schema-only`` usa la conexión pero no carga filas."""
 
-    def test_schema_only_usa_la_conexion_sin_escribir(
+    def test_schema_only_crea_cuarentena_ticket_y_linea(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        llamadas: dict[str, Any] = {}
+        llamadas: dict[str, Any] = {"sql": []}
 
         @contextmanager
         def conexion_falsa(*args: Any, **kwargs: Any) -> Iterator[object]:
@@ -137,7 +179,7 @@ class TestSchemaOnly:
         def execute_falso(
             conn: object, sql_path: Path, *, schema: str | None = None
         ) -> None:
-            llamadas["sql"] = sql_path
+            llamadas["sql"].append(sql_path)
             llamadas["schema"] = schema
 
         monkeypatch.setenv("PG_SCHEMA", "test_silver")
@@ -148,5 +190,8 @@ class TestSchemaOnly:
         ventas.run(schema_only=True)
 
         assert llamadas["conectado"] is True
-        assert llamadas["sql"] == ventas.SQL_FILE
+        assert llamadas["sql"] == [
+            ventas.QUARANTINE_SQL,
+            ventas.SQL_FILE,
+        ]
         assert llamadas["schema"] == "test_silver"

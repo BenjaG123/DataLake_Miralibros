@@ -10,6 +10,7 @@ data/
 # Archivos de datos
 # ============================
 *.csv
+!tests/fixtures/raw/CATALOGO CAFETERIA.csv
 *.tsv
 *.xlsx
 *.xls

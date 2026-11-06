@@ -16,11 +16,12 @@ from types import ModuleType
 import pandas as pd
 import pytest
 
-from etl.readers import read_excel_as_str
+from etl.readers import read_csv_as_str, read_excel_as_str
 from tests.fixtures.clima import escribir_grillas_clima
 
 GENERADOR = Path(__file__).resolve().parent / "fixtures" / "build_fixtures.py"
 DIRECTORIO_RAW = Path(__file__).resolve().parent / "fixtures" / "raw"
+CATALOGO_CAFETERIA = DIRECTORIO_RAW / "CATALOGO CAFETERIA.csv"
 
 ARCHIVOS_ESPERADOS = (
     "CLIENTES LIBRERIA.xlsx",
@@ -66,6 +67,7 @@ def archivos_fixtures(directorio_fixtures: Path) -> dict[str, Path]:
         "stock": directorio_fixtures / "STOCK LIBRERIA.xlsx",
         "ventas_libreria": directorio_fixtures / "VENTAS LIBRERIA.xlsx",
         "ventas_cafeteria": directorio_fixtures / "VENTAS CAFETERIA.xlsx",
+        "catalogo_cafeteria": CATALOGO_CAFETERIA,
     }
 
 
@@ -95,6 +97,7 @@ def archivos_raw(directorio_raw: Path) -> dict[str, Path]:
         "stock": directorio_raw / "STOCK LIBRERIA.xlsx",
         "ventas_libreria": directorio_raw / "VENTAS LIBRERIA.xlsx",
         "ventas_cafeteria": directorio_raw / "VENTAS CAFETERIA.xlsx",
+        "catalogo_cafeteria": CATALOGO_CAFETERIA,
     }
 
 
@@ -128,3 +131,9 @@ def clima_dir(tmp_path: Path) -> Path:
     target = tmp_path / "clima"
     escribir_grillas_clima(target)
     return target
+
+
+@pytest.fixture(scope="session")
+def catalogo_cafeteria_df() -> pd.DataFrame:
+    """Catálogo sintético de cafetería leído como texto desde el CSV."""
+    return read_csv_as_str(CATALOGO_CAFETERIA)

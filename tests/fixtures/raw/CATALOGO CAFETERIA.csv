@@ -1,0 +1,24 @@
+codigo,nombre,categoria,precio
+ESP-001,Espresso,Bebidas a base de espresso,3000
+ESP-002,Americano,Bebidas a base de espresso,3500
+LEC-001,Macchiato,Bebidas con leche,3000
+LEC-002,Cortado simple,Bebidas con leche,3500
+LEC-003,Cortado doble,Bebidas con leche,4000
+LEC-004,Vienés,Bebidas con leche,4000
+LEC-005,Cappuccino,Bebidas con leche,3500
+LEC-006,Flat white,Bebidas con leche,3500
+LEC-007,Latte,Bebidas con leche,4000
+LEC-008,Mocca,Bebidas con leche,4500
+LEC-009,Mocca blanco,Bebidas con leche,4500
+LEC-010,Chocolate caliente,Bebidas con leche,4500
+LEC-011,Pumpkin spice latte,Bebidas con leche,4500
+LEC-012,Chai latte,Bebidas con leche,4500
+LEC-013,Golden Milk,Bebidas con leche,4500
+LEC-014,Matcha latte,Bebidas con leche,4500
+INF-001,Tetera individual,Infusiones,3000
+INF-002,Tetera para compartir,Infusiones,5500
+PAS-001,Croissant,Pastelería (Vitrina),3000
+PAS-002,Brownie,Pastelería (Vitrina),3000
+PAS-003,Galletas,Pastelería (Vitrina),2500
+PAS-004,Rollo de canela,Pastelería (Vitrina),3000
+PAS-005,Tartaleta,Pastelería (Vitrina),3500

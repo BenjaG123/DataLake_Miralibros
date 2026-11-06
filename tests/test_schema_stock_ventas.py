@@ -45,25 +45,34 @@ TIPOS_STOCK = {
     "_loaded_at": "TIMESTAMPTZ",
 }
 
-TIPOS_VENTAS = {
+TIPOS_VENTAS_TICKET = {
     "origen": "TEXT",
     "correlativo": "BIGINT",
-    "orden_web": "TEXT",
     "fecha": "DATE",
+    "hora_simulada": "TIME",
+    "rut_cliente": "VARCHAR(10)",
     "medio_pago": "TEXT",
     "tipo_documento": "TEXT",
     "folio": "TEXT",
-    "voucher_maquina_f": "TEXT",
     "total_venta": "NUMERIC(12,0)",
     "cant_items": "INTEGER",
-    "canal": "TEXT",
-    "feria": "TEXT",
     "tiene_descuento": "TEXT",
     "es_devolucion": "TEXT",
     "estado": "TEXT",
     "_source_file": "TEXT",
     "_loaded_at": "TIMESTAMPTZ",
     "updated_at": "TIMESTAMPTZ",
+}
+
+TIPOS_VENTAS_LINEA = {
+    "origen": "TEXT",
+    "correlativo": "BIGINT",
+    "linea": "INTEGER",
+    "codigo_interno": "TEXT",
+    "cantidad": "INTEGER",
+    "precio_unitario": "NUMERIC(12,0)",
+    "total_linea": "NUMERIC(12,0)",
+    "_loaded_at": "TIMESTAMPTZ",
 }
 
 
@@ -89,7 +98,15 @@ def _columnas_ddl(ddl: str, tabla: str) -> dict[str, str]:
         if not definicion:
             continue
         if definicion.upper().startswith(
-            ("CONSTRAINT", "PRIMARY KEY", "CHECK", "UNIQUE", "FOREIGN KEY")
+            (
+                "CONSTRAINT",
+                "PRIMARY KEY",
+                "CHECK",
+                "UNIQUE",
+                "FOREIGN KEY",
+                "REFERENCES",
+                "ON",
+            )
         ):
             continue
         partes = definicion.split()
@@ -104,28 +121,43 @@ class TestColumnas:
     def test_stock_columnas_en_orden(self) -> None:
         assert list(_columnas_ddl(DDL_STOCK, "stock")) == list(stock.COLUMNS)
 
-    def test_ventas_columnas_en_orden(self) -> None:
-        assert list(_columnas_ddl(DDL_VENTAS, "ventas")) == list(
-            ventas.COLUMNS
-        )
+    def test_ventas_ticket_columnas_en_orden(self) -> None:
+        assert list(
+            _columnas_ddl(DDL_VENTAS, "ventas_ticket")
+        ) == list(ventas.TICKET_COLUMNS)
+
+    def test_ventas_linea_columnas_en_orden(self) -> None:
+        assert list(
+            _columnas_ddl(DDL_VENTAS, "ventas_linea")
+        ) == list(ventas.LINE_COLUMNS)
 
     def test_tipos_de_stock(self) -> None:
         assert _columnas_ddl(DDL_STOCK, "stock") == TIPOS_STOCK
 
-    def test_tipos_de_ventas(self) -> None:
-        assert _columnas_ddl(DDL_VENTAS, "ventas") == TIPOS_VENTAS
+    def test_tipos_de_ventas_ticket(self) -> None:
+        assert (
+            _columnas_ddl(DDL_VENTAS, "ventas_ticket")
+            == TIPOS_VENTAS_TICKET
+        )
+
+    def test_tipos_de_ventas_linea(self) -> None:
+        assert (
+            _columnas_ddl(DDL_VENTAS, "ventas_linea")
+            == TIPOS_VENTAS_LINEA
+        )
 
     def test_auditoria_se_compara_sin_exclusiones(self) -> None:
-        """Los DDL no agregan columnas audit fuera de ``COLUMNS``.
+        """Los DDL no agregan columnas audit fuera de las tuplas públicas.
 
-        ``_source_file`` y ``_loaded_at`` ya viajan en ``COLUMNS``; por eso la
+        ``_source_file`` y ``_loaded_at`` ya viajan en las columnas; por eso la
         comparación es uno a uno. Si el DDL agregara una columna por defecto,
         este test obligaría a decidir si también debe ir en el pipeline.
         """
         assert {"_source_file", "_loaded_at"} <= set(stock.COLUMNS)
         assert {"_source_file", "_loaded_at", "updated_at"} <= set(
-            ventas.COLUMNS
+            ventas.TICKET_COLUMNS
         )
+        assert {"_loaded_at"} <= set(ventas.LINE_COLUMNS)
 
 
 class TestClaves:
@@ -136,45 +168,54 @@ class TestClaves:
         assert re.search(r"\bisbn\s+TEXT\s+PRIMARY KEY\b", cuerpo)
         assert stock.KEY_COLUMNS == ("isbn",)
 
-    def test_ventas_pk_es_origen_y_correlativo(self) -> None:
-        cuerpo = _cuerpo_create_table(DDL_VENTAS, "ventas")
+    def test_ventas_ticket_pk_es_origen_y_correlativo(self) -> None:
+        cuerpo = _cuerpo_create_table(DDL_VENTAS, "ventas_ticket")
         assert re.search(
             r"PRIMARY KEY\s*\(\s*origen\s*,\s*correlativo\s*\)",
             cuerpo,
         )
         assert ventas.KEY_COLUMNS == ("origen", "correlativo")
 
+    def test_ventas_linea_pk_incluye_linea(self) -> None:
+        cuerpo = _cuerpo_create_table(DDL_VENTAS, "ventas_linea")
+        assert re.search(
+            r"PRIMARY KEY\s*\(\s*origen\s*,\s*correlativo\s*,\s*linea\s*\)",
+            cuerpo,
+        )
+
     def test_update_columns_no_tocan_la_clave(self) -> None:
         assert not set(stock.KEY_COLUMNS) & set(stock.UPDATE_COLUMNS)
-        assert not set(ventas.KEY_COLUMNS) & set(ventas.UPDATE_COLUMNS)
+        assert not set(ventas.KEY_COLUMNS) & set(
+            ventas.TICKET_UPDATE_COLUMNS
+        )
 
 
 @pytest.mark.parametrize(
-    ("ddl", "patron"),
+    ("ddl", "tabla", "patron"),
     [
-        (DDL_STOCK, r"stock_total\s*>=\s*0"),
+        (DDL_STOCK, "stock", r"stock_total\s*>=\s*0"),
         (
             DDL_STOCK,
+            "stock",
             r"stock_total\s*=\s*stock_consignacion\s*\+\s*stock_propio",
         ),
-        (DDL_VENTAS, r"total_venta\s*>=\s*0"),
-        (DDL_VENTAS, r"cant_items\s*>\s*0"),
+        (DDL_VENTAS, "ventas_ticket", r"total_venta\s*>=\s*0"),
+        (DDL_VENTAS, "ventas_ticket", r"cant_items\s*>\s*0"),
         (
             DDL_VENTAS,
+            "ventas_ticket",
             r"origen\s+IN\s*\(\s*'LIBRERIA'\s*,\s*'CAFETERIA'\s*\)",
         ),
-        (
-            DDL_VENTAS,
-            r"tiene_descuento\s+IN\s*\(\s*'SI'\s*,\s*'NO'\s*\)",
-        ),
-        (
-            DDL_VENTAS,
-            r"es_devolucion\s+IN\s*\(\s*'SI'\s*,\s*'NO'\s*\)",
-        ),
+        (DDL_VENTAS, "ventas_linea", r"linea\s*>\s*0"),
+        (DDL_VENTAS, "ventas_linea", r"cantidad\s*>\s*0"),
+        (DDL_VENTAS, "ventas_linea", r"precio_unitario\s*>=\s*0"),
+        (DDL_VENTAS, "ventas_linea", r"total_linea\s*>=\s*0"),
     ],
 )
-def test_checks_clave(ddl: str, patron: str) -> None:
-    assert re.search(patron, ddl), f"falta el CHECK {patron!r}"
+def test_checks_clave(ddl: str, tabla: str, patron: str) -> None:
+    assert re.search(patron, _cuerpo_create_table(ddl, tabla)), (
+        f"falta el CHECK {patron!r} en {tabla}"
+    )
 
 
 class TestSchema:
@@ -187,7 +228,11 @@ class TestSchema:
 
     @pytest.mark.parametrize(
         ("ddl", "tabla"),
-        [(DDL_STOCK, "stock"), (DDL_VENTAS, "ventas")],
+        [
+            (DDL_STOCK, "stock"),
+            (DDL_VENTAS, "ventas_ticket"),
+            (DDL_VENTAS, "ventas_linea"),
+        ],
     )
     def test_tabla_usa_placeholder(self, ddl: str, tabla: str) -> None:
         assert f"{{{{schema}}}}.{tabla}" in ddl

@@ -65,7 +65,7 @@ def _fila_venta(**cambios: Any) -> dict[str, Any]:
 
 def _lote_ventas(
     ruta: Path,
-) -> tuple[int, list[tuple[Any, ...]], list[dict[str, Any]]]:
+) -> tuple[int, list[ventas.Ticket], list[dict[str, Any]]]:
     """Lee y transforma un archivo de ventas infiriendo su origen."""
     dataframe = read_excel_as_str(ruta)
     filas, rechazadas = ventas.transform(
@@ -131,7 +131,7 @@ class TestStockLote:
                 ventas_unidades,
             ) = fila[:10]
             assert re.fullmatch(r"(?:[0-9]{13}|[0-9]{9}[0-9X])", isbn)
-            assert pvp >= 0
+            assert pvp >= 100
             assert consignacion >= 0
             assert propio >= 0
             assert total == consignacion + propio
@@ -211,9 +211,9 @@ class TestVentasLote:
         libreria = _lote_ventas(archivos_raw["ventas_libreria"])
         cafeteria = _lote_ventas(archivos_raw["ventas_cafeteria"])
 
-        assert libreria[0] + cafeteria[0] == 230
+        assert libreria[0] + cafeteria[0] == 240
         assert len(libreria[1]) + len(cafeteria[1]) == 207
-        assert len(libreria[2]) + len(cafeteria[2]) == 23
+        assert len(libreria[2]) + len(cafeteria[2]) == 33
 
     def test_volumen_por_archivo(
         self, archivos_raw: dict[str, Path]
@@ -222,14 +222,14 @@ class TestVentasLote:
         cafeteria = _lote_ventas(archivos_raw["ventas_cafeteria"])
 
         assert (libreria[0], len(libreria[1]), len(libreria[2])) == (
-            150,
+            155,
             137,
-            13,
+            18,
         )
         assert (cafeteria[0], len(cafeteria[1]), len(cafeteria[2])) == (
-            80,
+            85,
             70,
-            10,
+            15,
         )
 
     def test_motivos_globales(
@@ -249,6 +249,8 @@ class TestVentasLote:
             {
                 "total venta inválido o negativo": 12,
                 "cantidad de ítems inválida": 11,
+                "folio inválido o vacío": 6,
+                "tipo documento sin documento": 6,
             }
         )
 
@@ -313,8 +315,8 @@ class TestVentasFila:
 
         assert motivo is None
         assert resultado is not None
-        assert resultado[12] == esperado
-        assert resultado[13] == esperado
+        assert resultado.tiene_descuento == esperado
+        assert resultado.es_devolucion == esperado
 
 
 class TestVentasDeduplicacion:
@@ -349,9 +351,11 @@ class TestVentasDeduplicacion:
 
         assert duplicadas == 1
         assert len(filas) == 2
-        por_clave = {(fila[0], fila[1]): fila for fila in filas}
-        assert por_clave[("LIBRERIA", 1)][8] == 2000
-        assert por_clave[("CAFETERIA", 1)][8] == 3000
+        por_clave = {
+            (fila.origen, fila.correlativo): fila for fila in filas
+        }
+        assert por_clave[("LIBRERIA", 1)].total_venta == 2000
+        assert por_clave[("CAFETERIA", 1)].total_venta == 3000
 
 
 @contextmanager
@@ -381,5 +385,8 @@ class TestSinBaseDeDatos:
                 archivos_raw["ventas_libreria"],
                 archivos_raw["ventas_cafeteria"],
             ],
+            clientes_path=archivos_raw["clientes"],
+            stock_path=archivos_raw["stock"],
+            catalogo_cafeteria_path=archivos_raw["catalogo_cafeteria"],
             dry_run=True,
         )

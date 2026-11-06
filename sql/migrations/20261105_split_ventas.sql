@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
     correlativo       BIGINT        NOT NULL,
     fecha             DATE          NOT NULL,
     hora_simulada     TIME          NULL,
-    rut_cliente       VARCHAR(10)   NULL,
+    cliente_id        VARCHAR(64)   NULL,
     medio_pago        TEXT,
     tipo_documento    TEXT,
     folio             TEXT,
@@ -32,9 +32,9 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
 
     PRIMARY KEY (origen, correlativo),
 
-    CONSTRAINT ventas_ticket_rut_fk
-        FOREIGN KEY (rut_cliente)
-        REFERENCES {{schema}}.clientes (rut),
+    CONSTRAINT ventas_ticket_cliente_fk
+        FOREIGN KEY (cliente_id)
+        REFERENCES {{schema}}.clientes (cliente_id),
 
     CONSTRAINT ventas_ticket_origen_valido
         CHECK (origen IN ('LIBRERIA', 'CAFETERIA')),
@@ -52,8 +52,8 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
 CREATE INDEX IF NOT EXISTS ventas_ticket_fecha_idx
     ON {{schema}}.ventas_ticket (fecha);
 
-CREATE INDEX IF NOT EXISTS ventas_ticket_rut_cliente_idx
-    ON {{schema}}.ventas_ticket (rut_cliente);
+CREATE INDEX IF NOT EXISTS ventas_ticket_cliente_id_idx
+    ON {{schema}}.ventas_ticket (cliente_id);
 
 CREATE INDEX IF NOT EXISTS ventas_ticket_origen_fecha_idx
     ON {{schema}}.ventas_ticket (origen, fecha);

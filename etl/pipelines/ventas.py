@@ -17,10 +17,11 @@ Decisiones de algoritmos:
 - Las líneas se reconstruyen con programación dinámica de bitsets por origen.
   Para cada ``k`` se calculan las sumas alcanzables con exactamente ``k``
   precios; luego se reconstruye una multiset determinística (sin azar).
-- Los RUT se asignan con subset sum exacto por cliente. Los clientes se
-  ordenan por ``compras`` descendente y luego por ``rut`` para dar prioridad a
-  los montos mayores; un cliente sin subconjunto exacto queda sin asignación y
-  se registra un ``WARNING``.
+- Los ``cliente_id`` se asignan con subset sum exacto por cliente. Los
+  clientes se ordenan por ``compras`` descendente y luego por ``cliente_id``
+  para dar prioridad a los montos mayores; un cliente sin subconjunto exacto
+  queda sin asignación y se registra un ``WARNING``. La búsqueda es iterativa
+  y tiene límites de iteraciones y de tiempo para no bloquear el pipeline.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import time as time_module
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -116,7 +118,7 @@ TICKET_COLUMNS = (
     "correlativo",
     "fecha",
     "hora_simulada",
-    "rut_cliente",
+    "cliente_id",
     "medio_pago",
     "tipo_documento",
     "folio",
@@ -133,7 +135,7 @@ TICKET_COLUMNS = (
 TICKET_UPDATE_COLUMNS = (
     "fecha",
     "hora_simulada",
-    "rut_cliente",
+    "cliente_id",
     "medio_pago",
     "tipo_documento",
     "folio",
@@ -167,6 +169,16 @@ UPDATE_COLUMNS = TICKET_UPDATE_COLUMNS
 REGLA_LINEA = "VENTAS-LINEA-001"
 MOTIVO_SIN_COMBINACION = "sin combinación exacta de líneas"
 
+MAX_ITERACIONES_SUBSET_SUM = 250_000
+MAX_SEGUNDOS_SUBSET_SUM = 2.0
+
+
+class SubsetSumTimeout(RuntimeError):
+    """La búsqueda de subconjunto superó el límite de iteraciones o tiempo.
+
+    El mensaje nunca incluye montos ni RUT para no filtrar datos personales.
+    """
+
 
 @dataclass(frozen=True)
 class Ticket:
@@ -188,14 +200,14 @@ class Ticket:
     loaded_at: datetime
     fila: int
 
-    def to_db_row(self, rut_cliente: str | None) -> tuple[Any, ...]:
+    def to_db_row(self, cliente_id: str | None) -> tuple[Any, ...]:
         """Devuelve la tupla en el orden exacto de ``TICKET_COLUMNS``."""
         return (
             self.origen,
             self.correlativo,
             self.fecha,
             self.hora_simulada,
-            rut_cliente,
+            cliente_id,
             self.medio_pago,
             self.tipo_documento,
             self.folio,
@@ -243,9 +255,9 @@ class Line:
 
 @dataclass(frozen=True)
 class Client:
-    """Cliente válido en memoria para el cuadre de RUT."""
+    """Cliente anónimo en memoria para el cuadre de montos."""
 
-    rut: str
+    cliente_id: str
     alta: date | None
     compras: int
 
@@ -633,21 +645,25 @@ def load_clientes(path: str | Path) -> list[Client]:
     require_columns(dataframe, clientes.SOURCE_COLUMNS, source=path)
     rows, rejected = clientes.transform(dataframe)
 
-    by_rut: dict[str, Client] = {}
+    by_id: dict[str, Client] = {}
     duplicates = 0
     for row in rows:
-        rut = row[0]
-        if rut is None:
+        cliente_id = row[0]
+        if cliente_id is None:
             continue
-        if rut in by_rut:
+        if cliente_id in by_id:
             duplicates += 1
             logger.warning(
-                "RUT duplicado en clientes (%s); se conserva la última fila",
-                rut,
+                "cliente_id duplicado (%s); se conserva la última fila",
+                cliente_id,
             )
-        by_rut[rut] = Client(rut=rut, alta=row[3], compras=row[7])
+        by_id[cliente_id] = Client(
+            cliente_id=cliente_id,
+            alta=row[1],
+            compras=row[5],
+        )
 
-    clients = list(by_rut.values())
+    clients = list(by_id.values())
     logger.info(
         "Clientes en memoria: %d únicos, %d descartados, %d duplicados",
         len(clients),
@@ -879,15 +895,26 @@ def build_lines(
     return lines
 
 
+# Nodo enlazado del camino elegido: (índice, nodo_padre). Evita copiar listas
+# en cada rama y mantiene el uso de memoria acotado al profundidad del DFS.
+PathNode = tuple[int, "PathNode | None"]
+
+
 def _subset_sum_indices(
     values: Sequence[int],
     target: int,
+    *,
+    max_iteraciones: int = MAX_ITERACIONES_SUBSET_SUM,
+    max_segundos: float = MAX_SEGUNDOS_SUBSET_SUM,
 ) -> list[int] | None:
     """Busca un subconjunto exacto de ``values`` que sume ``target``.
 
-    Usa DFS con memoización de fallos, poda por suma de sufijo y poda por
-    máximo común divisor. Los valores deben venir en el orden determinístico
-    en que se quieren probar.
+    Usa un DFS iterativo con pila explícita, memoización de estados fallidos,
+    poda por suma de sufijo y poda por máximo común divisor. El camino se
+    guarda como una lista enlazada de índices para no copiar listas.
+
+    Lanza :class:`SubsetSumTimeout` si se supera ``max_iteraciones`` o
+    ``max_segundos``. El mensaje de la excepción no incluye montos ni RUT.
     """
     size = len(values)
     if target < 0:
@@ -905,34 +932,63 @@ def _subset_sum_indices(
         return None
 
     failed: set[tuple[int, int]] = set()
-    chosen: list[int] = []
+    limite_tiempo = time_module.monotonic() + max_segundos
+    iteraciones = 0
 
-    def search(index: int, remaining: int) -> bool:
+    # Cada entrada es ("nodo", indice, restante, camino) o
+    # ("fallo", indice, restante, None). El orden de apilado (fallo, excluir,
+    # incluir) preserva el orden incluir/excluir del DFS recursivo.
+    stack: list[tuple[str, int, int, PathNode | None]] = [
+        ("nodo", 0, target, None)
+    ]
+
+    while stack:
+        iteraciones += 1
+        if iteraciones > max_iteraciones:
+            raise SubsetSumTimeout(
+                "Búsqueda de subconjunto interrumpida por límite de iteraciones"
+            )
+        if time_module.monotonic() >= limite_tiempo:
+            raise SubsetSumTimeout(
+                "Búsqueda de subconjunto interrumpida por límite de tiempo"
+            )
+
+        tipo, index, remaining, path = stack.pop()
+
+        if tipo == "fallo":
+            failed.add((index, remaining))
+            continue
+
         if remaining == 0:
-            return True
+            indices: list[int] = []
+            node = path
+            while node is not None:
+                node_index, node = node
+                indices.append(node_index)
+            indices.reverse()
+            return indices
+
         if index == size or remaining > suffix_sum[index]:
-            return False
+            continue
         if suffix_gcd[index] == 0 or remaining % suffix_gcd[index] != 0:
-            return False
+            continue
 
         state = (index, remaining)
         if state in failed:
-            return False
+            continue
 
+        stack.append(("fallo", index, remaining, None))
+        stack.append(("nodo", index + 1, remaining, path))
         if values[index] <= remaining:
-            chosen.append(index)
-            if search(index + 1, remaining - values[index]):
-                return True
-            chosen.pop()
+            stack.append(
+                (
+                    "nodo",
+                    index + 1,
+                    remaining - values[index],
+                    (index, path),
+                )
+            )
 
-        if search(index + 1, remaining):
-            return True
-
-        failed.add(state)
-        return False
-
-    if search(0, target):
-        return list(chosen)
     return None
 
 
@@ -940,17 +996,19 @@ def assign_clients(
     tickets: Sequence[Ticket],
     clients: Sequence[Client],
 ) -> dict[tuple[str, int], str]:
-    """Asigna RUT por subset sum exacto y retorna ticket -> RUT.
+    """Asigna ``cliente_id`` por subset sum y retorna ticket -> cliente_id.
 
-    Los clientes se ordenan por ``compras`` descendente y luego por ``rut``.
-    Solo se consideran tickets no usados, con ``fecha >= alta`` y con monto
-    individual menor o igual al total histórico del cliente.
+    Los clientes se ordenan por ``compras`` descendente y luego por
+    ``cliente_id``. Solo se consideran tickets no usados, con
+    ``fecha >= alta`` y con monto individual menor o igual al total histórico
+    del cliente. Si se agota el límite de búsqueda, el cliente queda sin
+    asignar y se registra un ``WARNING`` con su ``cliente_id``.
     """
     used: set[int] = set()
     assignments: dict[tuple[str, int], str] = {}
     ordered_clients = sorted(
         clients,
-        key=lambda client: (-client.compras, client.rut),
+        key=lambda client: (-client.compras, client.cliente_id),
     )
 
     for client in ordered_clients:
@@ -958,8 +1016,8 @@ def assign_clients(
             continue
         if client.alta is None:
             logger.warning(
-                "Cliente RUT %s sin alta válida; no es elegible",
-                client.rut,
+                "Cliente cliente_id=%s sin alta válida; no es elegible",
+                client.cliente_id,
             )
             continue
 
@@ -978,15 +1036,23 @@ def assign_clients(
             )
         )
 
-        selected = _subset_sum_indices(
-            [ticket.total_venta for _, ticket in candidates],
-            client.compras,
-        )
+        try:
+            selected = _subset_sum_indices(
+                [ticket.total_venta for _, ticket in candidates],
+                client.compras,
+            )
+        except SubsetSumTimeout:
+            logger.warning(
+                "Cuadre de compras interrumpido por límite para "
+                "cliente_id=%s; se deja sin asignar",
+                client.cliente_id,
+            )
+            continue
         if selected is None:
             logger.warning(
-                "Sin subconjunto exacto para RUT %s: compras=%d, "
+                "Sin subconjunto exacto para cliente_id=%s: compras=%d, "
                 "tickets elegibles=%d",
-                client.rut,
+                client.cliente_id,
                 client.compras,
                 len(candidates),
             )
@@ -995,7 +1061,9 @@ def assign_clients(
         for position in selected:
             index, ticket = candidates[position]
             used.add(index)
-            assignments[(ticket.origen, ticket.correlativo)] = client.rut
+            assignments[(ticket.origen, ticket.correlativo)] = (
+                client.cliente_id
+            )
 
     return assignments
 
@@ -1326,7 +1394,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--clientes",
         type=Path,
         default=CLIENTES_PATH,
-        help="Ruta del Excel de clientes para el cuadre de RUT.",
+        help="Ruta del Excel de clientes para el cuadre de cliente_id.",
     )
     parser.add_argument(
         "--stock",

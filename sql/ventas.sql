@@ -6,7 +6,7 @@
 --
 -- ``codigo_interno`` no tiene FK porque apunta lógicamente a
 -- ``{{schema}}.stock.isbn`` para LIBRERIA y al catálogo de cafetería para
--- CAFETERIA. La FK de ``rut_cliente`` exige que ``{{schema}}.clientes`` ya
+-- CAFETERIA. La FK de ``cliente_id`` exige que ``{{schema}}.clientes`` ya
 -- exista; el runner ejecuta clientes antes de ventas.
 
 CREATE SCHEMA IF NOT EXISTS {{schema}};
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
     correlativo       BIGINT        NOT NULL,
     fecha             DATE          NOT NULL,
     hora_simulada     TIME          NULL,
-    rut_cliente       VARCHAR(10)   NULL,
+    cliente_id        VARCHAR(64)   NULL,
     medio_pago        TEXT,
     tipo_documento    TEXT,
     folio             TEXT,
@@ -31,9 +31,9 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
 
     PRIMARY KEY (origen, correlativo),
 
-    CONSTRAINT ventas_ticket_rut_fk
-        FOREIGN KEY (rut_cliente)
-        REFERENCES {{schema}}.clientes (rut),
+    CONSTRAINT ventas_ticket_cliente_fk
+        FOREIGN KEY (cliente_id)
+        REFERENCES {{schema}}.clientes (cliente_id),
 
     CONSTRAINT ventas_ticket_origen_valido
         CHECK (origen IN ('LIBRERIA', 'CAFETERIA')),
@@ -51,14 +51,14 @@ CREATE TABLE IF NOT EXISTS {{schema}}.ventas_ticket (
 COMMENT ON COLUMN {{schema}}.ventas_ticket.hora_simulada IS
     'Hora sintética generada por el ETL; no proviene del POS.';
 
-COMMENT ON COLUMN {{schema}}.ventas_ticket.rut_cliente IS
-    'Cliente asignado por cuadre exacto de montos; NULL si el ticket es anónimo.';
+COMMENT ON COLUMN {{schema}}.ventas_ticket.cliente_id IS
+    'Identificador anonimizado (HMAC-SHA256) asignado por cuadre exacto de montos; NULL si el ticket es anónimo.';
 
 CREATE INDEX IF NOT EXISTS ventas_ticket_fecha_idx
     ON {{schema}}.ventas_ticket (fecha);
 
-CREATE INDEX IF NOT EXISTS ventas_ticket_rut_cliente_idx
-    ON {{schema}}.ventas_ticket (rut_cliente);
+CREATE INDEX IF NOT EXISTS ventas_ticket_cliente_id_idx
+    ON {{schema}}.ventas_ticket (cliente_id);
 
 CREATE INDEX IF NOT EXISTS ventas_ticket_origen_fecha_idx
     ON {{schema}}.ventas_ticket (origen, fecha);

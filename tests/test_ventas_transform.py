@@ -1004,6 +1004,77 @@ class TestAssignClients:
 
         assert primera == segunda
 
+    def test_ticket_cafeteria_no_se_asigna(self) -> None:
+        """Un ticket de cafetería nunca cuadra compras históricas."""
+        id_cliente = _cliente_id("c")
+        tickets = [
+            _ticket(
+                correlativo=1,
+                total=1000,
+                fecha=date(2024, 1, 2),
+                origen="CAFETERIA",
+            )
+        ]
+        clients = self._clientes(
+            (id_cliente, date(2024, 1, 1), 1000),
+        )
+
+        assignments = assign_clients(tickets, clients)
+
+        assert assignments == {}
+
+    def test_mezcla_solo_asigna_ticket_libreria(self) -> None:
+        """Con el mismo total, solo se asigna la venta de librería."""
+        id_cliente = _cliente_id("d")
+        tickets = [
+            _ticket(
+                correlativo=1,
+                total=1000,
+                fecha=date(2024, 1, 3),
+                origen="LIBRERIA",
+            ),
+            _ticket(
+                correlativo=2,
+                total=1000,
+                fecha=date(2024, 1, 3),
+                origen="CAFETERIA",
+            ),
+        ]
+        clients = self._clientes(
+            (id_cliente, date(2024, 1, 1), 1000),
+        )
+
+        assignments = assign_clients(tickets, clients)
+
+        assert assignments == {("LIBRERIA", 1): id_cliente}
+        assert ("CAFETERIA", 2) not in assignments
+
+    def test_resultado_solo_contiene_claves_libreria(self) -> None:
+        """Aun con una mezcla amplia, las claves son solo de librería."""
+        primero = _cliente_id("e")
+        segundo = _cliente_id("f")
+        tickets = [
+            _ticket(correlativo=1, total=4000, origen="LIBRERIA"),
+            _ticket(correlativo=2, total=3000, origen="CAFETERIA"),
+            _ticket(correlativo=3, total=2000, origen="LIBRERIA"),
+            _ticket(correlativo=4, total=1000, origen="CAFETERIA"),
+            _ticket(correlativo=5, total=1000, origen="LIBRERIA"),
+        ]
+        clients = self._clientes(
+            (primero, date(2024, 1, 1), 5000),
+            (segundo, date(2024, 1, 1), 2000),
+        )
+
+        assignments = assign_clients(tickets, clients)
+
+        assert assignments
+        assert {origen for origen, _ in assignments} == {"LIBRERIA"}
+        assert set(assignments) == {
+            ("LIBRERIA", 1),
+            ("LIBRERIA", 3),
+            ("LIBRERIA", 5),
+        }
+
 
 class TestLoadClientes:
     """Clientes en memoria con compras monetarias y ``cliente_id`` anónimo."""

@@ -1003,6 +1003,11 @@ def assign_clients(
 ) -> dict[tuple[str, int], str]:
     """Asigna ``cliente_id`` por subset sum y retorna ticket -> cliente_id.
 
+    Solo los tickets de origen ``LIBRERIA`` son elegibles: las ventas de
+    ``CAFETERIA`` nunca se asignan y permanecen estrictamente anónimas. El
+    filtro se aplica aquí aunque el llamador pase tickets de ambos orígenes y
+    conserva el índice de la secuencia original para mantener el determinismo.
+
     Los clientes se ordenan por ``compras`` descendente y luego por
     ``cliente_id``. Solo se consideran tickets no usados, con
     ``fecha >= alta`` y con monto individual menor o igual al total histórico
@@ -1011,6 +1016,11 @@ def assign_clients(
     """
     used: set[int] = set()
     assignments: dict[tuple[str, int], str] = {}
+    eligible = [
+        (index, ticket)
+        for index, ticket in enumerate(tickets)
+        if ticket.origen == "LIBRERIA"
+    ]
     ordered_clients = sorted(
         clients,
         key=lambda client: (-client.compras, client.cliente_id),
@@ -1028,7 +1038,7 @@ def assign_clients(
 
         candidates = [
             (index, ticket)
-            for index, ticket in enumerate(tickets)
+            for index, ticket in eligible
             if index not in used
             and ticket.fecha >= client.alta
             and ticket.total_venta <= client.compras
@@ -1287,8 +1297,14 @@ def run(
         viable.append(ticket)
         lines_by_ticket[(ticket.origen, ticket.correlativo)] = lines
 
-    clients = load_clientes(clientes_path) if viable else []
-    assignments = assign_clients(viable, clients)
+    # Solo las ventas de librería se cuadran con clientes; las de cafetería son
+    # estrictamente anónimas. Si el lote no trae librería ni siquiera se lee el
+    # archivo de clientes.
+    asignables = [
+        ticket for ticket in viable if ticket.origen == "LIBRERIA"
+    ]
+    clients = load_clientes(clientes_path) if asignables else []
+    assignments = assign_clients(asignables, clients)
 
     all_rejected = [*rejected, *line_rejected]
     _log_rejection_summary(all_rejected)
@@ -1335,7 +1351,11 @@ def run(
         with conn.transaction():
             ticket_rows = [
                 ticket.to_db_row(
-                    assignments.get((ticket.origen, ticket.correlativo))
+                    None
+                    if ticket.origen != "LIBRERIA"
+                    else assignments.get(
+                        (ticket.origen, ticket.correlativo)
+                    )
                 )
                 for ticket in viable
             ]
